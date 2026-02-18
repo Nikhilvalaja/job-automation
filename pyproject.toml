@@ -1,0 +1,60 @@
+[project]
+name = "job-automation"
+version = "0.1.0"
+description = "Enterprise-grade job application automation ecosystem"
+requires-python = ">=3.12"
+dependencies = [
+    # Core
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "httpx>=0.28.0",
+    # Google Sheets
+    "gspread>=6.1.0",
+    "google-auth>=2.37.0",
+    "google-auth-oauthlib>=1.2.0",
+    # Gmail
+    "google-api-python-client>=2.160.0",
+    "google-auth-httplib2>=0.2.0",
+    # Bots / Scheduling
+    "apscheduler>=3.10.0",
+    "python-telegram-bot>=21.9",
+    # Dashboard
+    "streamlit>=1.41.0",
+    "plotly>=5.24.0",
+    "pandas>=2.2.0",
+    # LLM
+    "openai>=1.59.0",
+    # Utilities
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-httpx>=0.35.0",
+    "ruff>=0.8.0",
+    "mypy>=1.14.0",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src", "backend", "bots", "dashboard"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
