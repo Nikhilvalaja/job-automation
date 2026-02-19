@@ -124,3 +124,31 @@ Print this at the end for a complete development history.
 - `last_email_date` takes precedence over `date_applied` to avoid false positives
 
 ---
+
+## 2026-02-19 — Milestone 5: Orchestrator (SuperBot)
+
+### What Was Built
+- **BotScheduler engine** (`src/scheduler/engine.py`): APScheduler wrapper
+  - `add_interval_bot()` — schedule a bot every N minutes (e.g., email bot every 5 min)
+  - `add_daily_bot()` — schedule a bot at a specific time (e.g., reminder bot at 9:00 AM)
+  - Coalesce missed runs, max 1 instance per bot, graceful start/stop
+  - `get_jobs()` for status display, `running` property
+- **Orchestrator** (`bots/orchestrator/run.py`): central scheduler for all bots
+  - Registers Email Bot (interval) and Reminder Bot (daily cron)
+  - CLI flags: `--no-email`, `--no-reminder`, `--run-now`, `--status`
+  - Sends Telegram notification on startup/shutdown
+  - Graceful shutdown via Ctrl+C / SIGTERM
+  - Signal handling for clean process termination
+- **12 orchestrator tests** (`tests/test_bots/test_orchestrator.py`):
+  - Scheduler: interval/daily registration, immediate run, start/stop lifecycle
+  - Bot isolation: failing bot doesn't crash scheduler
+  - Orchestrator: init flags, disable individual bots
+
+### Design Decisions
+- BackgroundScheduler (thread-based) — bots run in background threads, main thread handles signals
+- `coalesce=True` — if a run was missed, only run once (not catch up N times)
+- `max_instances=1` — never overlap two runs of the same bot
+- Each bot's `run_safe()` catches exceptions — one bot crashing never affects others
+- Startup notification via Telegram shows which bots are scheduled
+
+---
