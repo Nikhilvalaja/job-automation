@@ -66,3 +66,36 @@ Print this at the end for a complete development history.
 - Tests use FastAPI dependency override with FakeSheetsClient — no Google credentials needed
 
 ---
+
+## 2026-02-19 — Milestone 3: Email Bot (Gmail Monitor)
+
+### What Was Built
+- **Gmail API client** (`src/gmail/client.py`): OAuth 2.0 Desktop flow, token refresh, read-only
+  - Methods: `get_recent_messages()`, `get_message_detail()`, `get_thread()`, `apply_label()`
+  - Body extraction handles multipart/nested MIME structures
+  - Safety: only requests readonly + labels + modify scopes (never send/delete)
+- **Email classification rules engine** (`src/gmail/rules.py`):
+  - 5 rule categories: Applied (priority 2), Reject (3), Assessment (4), Interview (5), Offer (6)
+  - ~50 keywords across all categories covering common job email patterns
+  - Priority-based: highest priority wins on conflict (e.g., offer beats applied)
+  - Confidence levels: "high" for subject matches, "medium" for body matches
+  - Case-insensitive matching
+- **Gmail label manager** (`src/gmail/labels.py`):
+  - Auto-creates labels under `JobBot/` prefix (Applied, Assessment, Interview, Rejected, Offer, Processed)
+  - Caches label IDs to minimize API calls
+- **Email Bot** (`bots/email_bot/run.py`):
+  - Fetches recent inbox emails, skips already-processed (via JobBot/Processed label)
+  - Classifies each email, updates job status via PATCH /jobs/by-thread/{thread_id}
+  - Applies status label + processed label for idempotent re-runs
+  - CLI with `--minutes` flag and `--dry-run` mode for safe testing
+- **24 classification tests** (`tests/test_bots/test_email_rules.py`):
+  - Tests all 5 categories, no-match cases, priority conflicts, confidence levels, case handling
+
+### Design Decisions
+- Rule-based classification (not LLM) for speed, determinism, and zero API cost
+- Thread ID matching links emails to tracked applications (same thread_id in Sheets)
+- "JobBot/Processed" label prevents reprocessing the same email
+- Dry-run mode lets user preview classifications without modifying anything
+- Body text capped at 5000 chars to prevent memory issues with large emails
+
+---
