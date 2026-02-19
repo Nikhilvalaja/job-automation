@@ -187,6 +187,11 @@ def main() -> None:
     args = parser.parse_args()
     bot = EmailBot(minutes_back=args.minutes)
 
+    # Fix Windows console encoding for emoji/unicode
+    import sys, io
+    if sys.platform == "win32":
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
     try:
         bot.start()
 
@@ -202,7 +207,7 @@ def main() -> None:
                 body = msg.get("body", "") or msg.get("snippet", "")
                 result = classify_email(subject=subject, body=body)
 
-                status_str = result.status.value if result else "—"
+                status_str = result.status.value if result else "-"
                 rule_str = f"({result.rule_name}, {result.confidence})" if result else ""
                 print(f"  {status_str:<12} | {sender[:30]:<30} | {subject[:50]} {rule_str}")
 
