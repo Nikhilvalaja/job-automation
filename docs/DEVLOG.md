@@ -177,3 +177,26 @@ Print this at the end for a complete development history.
 - AbortSignal.timeout on all fetch calls — never hangs on dead backend
 
 ---
+
+## 2026-02-19 — Milestone 7: Dashboard (Streamlit + Plotly)
+
+### What Was Built
+- **Streamlit dashboard** (`dashboard/app.py`):
+  - KPI cards: total, applied, interviews, offers, rejected, no reply
+  - Status distribution donut chart (Plotly)
+  - Applications by source horizontal bar chart
+  - Application timeline with daily bars + cumulative line (dual y-axis)
+  - Full job table with multi-filter (status, source, search)
+  - Quick status update from the dashboard
+  - Add new job form in sidebar
+  - Backend connection status indicator
+  - 30-second cache with manual refresh button
+
+### Design Decisions
+- Streamlit for rapid development + auto-refresh capability
+- Plotly for interactive charts (hover, zoom, pan)
+- Backend URL configurable (defaults to localhost:8000)
+- `@st.cache_data(ttl=30)` for performance — fetches only every 30 seconds
+- Responsive layout with wide mode for better chart display
+
+---
