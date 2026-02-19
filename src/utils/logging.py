@@ -42,8 +42,13 @@ def setup_logging() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Console handler (always)
-    console = logging.StreamHandler(sys.stdout)
+    # Console handler (always) — force UTF-8 on Windows to avoid encoding errors
+    if sys.platform == "win32":
+        import io
+        stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    else:
+        stream = sys.stdout
+    console = logging.StreamHandler(stream)
     console.setLevel(log_level)
     console.setFormatter(fmt)
     root.addHandler(console)
