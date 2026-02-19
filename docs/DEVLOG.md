@@ -99,3 +99,28 @@ Print this at the end for a complete development history.
 - Body text capped at 5000 chars to prevent memory issues with large emails
 
 ---
+
+## 2026-02-19 — Milestone 4: Reminder Bot + Telegram Notifications
+
+### What Was Built
+- **NotificationChannel base** (`src/notifications/base.py`): abstract interface for all notification providers
+- **Telegram notifier** (`src/notifications/telegram.py`):
+  - Sends messages via Telegram Bot API using httpx (sync)
+  - Methods: `send_message()`, `send_job_alert()`, `send_summary()`, `send_followup_reminder()`
+  - Markdown formatting, retry logic, graceful skip if not configured
+- **Reminder Bot** (`bots/reminder_bot/run.py`):
+  - Fetches all "Applied" jobs from backend, checks against threshold (default 7 days)
+  - Uses `last_email_date` if available, falls back to `date_applied`
+  - Marks stale jobs as "No Reply" via PATCH /jobs/{app_id}
+  - Sends single Telegram summary with all stale applications
+  - CLI with `--days` flag and `--dry-run` mode
+- **11 reminder tests** (`tests/test_bots/test_reminder_logic.py`):
+  - Stale detection, threshold boundary, last_email_date precedence, empty/invalid dates
+
+### Design Decisions
+- Telegram Bot API via httpx (not python-telegram-bot async) — keeps bots sync and simple
+- Single summary message instead of one per job — avoids Telegram rate limits
+- Graceful degradation: bot works without Telegram configured (just logs)
+- `last_email_date` takes precedence over `date_applied` to avoid false positives
+
+---
