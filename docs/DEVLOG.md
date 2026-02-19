@@ -152,3 +152,28 @@ Print this at the end for a complete development history.
 - Startup notification via Telegram shows which bots are scheduled
 
 ---
+
+## 2026-02-19 — Milestone 6: Chrome Extension
+
+### What Was Built
+- **Chrome Manifest v3 extension** (`extension/`):
+  - Popup UI with form to add jobs directly from any page
+  - Auto-fills current page URL and detects source (LinkedIn, Indeed, etc.)
+  - Content script extracts company name and role from job posting pages
+  - Shows last 5 tracked jobs with status badges
+  - Backend connection indicator (green/red dot)
+  - Configurable backend URL (default: localhost:8000)
+- **Content script** (`extension/content.js`): auto-extracts job details from:
+  - LinkedIn, Indeed, Glassdoor, Lever, Greenhouse, Workday
+  - Generic fallback using `<h1>` and `og:site_name` meta tag
+- **Background service worker** (`extension/background.js`): initializes default settings on install
+- **Icons**: 16x16, 48x48, 128x128 blue "JT" icons
+
+### Design Decisions
+- Manifest v3 (latest Chrome extension standard) — no deprecated APIs
+- Content script is read-only — never modifies the job posting page
+- Backend URL stored in `chrome.storage.local` — survives extension updates
+- XSS prevention: all dynamic text rendered via `escapeHtml()` helper
+- AbortSignal.timeout on all fetch calls — never hangs on dead backend
+
+---

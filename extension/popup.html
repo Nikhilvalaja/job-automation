@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Job Tracker</h1>
+      <span id="status-dot" class="dot dot-disconnected" title="Backend status"></span>
+    </header>
+
+    <!-- Add Job Form -->
+    <form id="add-form">
+      <div class="field">
+        <label for="company">Company *</label>
+        <input type="text" id="company" required placeholder="e.g. Google">
+      </div>
+      <div class="field">
+        <label for="role">Role *</label>
+        <input type="text" id="role" required placeholder="e.g. Software Engineer">
+      </div>
+      <div class="field">
+        <label for="source">Source</label>
+        <input type="text" id="source" placeholder="e.g. LinkedIn, Indeed">
+      </div>
+      <div class="field">
+        <label for="job-url">Job URL</label>
+        <input type="text" id="job-url" readonly placeholder="Auto-filled from current page">
+      </div>
+      <div class="field">
+        <label for="job-status">Status</label>
+        <select id="job-status">
+          <option value="To Apply">To Apply</option>
+          <option value="Applied" selected>Applied</option>
+          <option value="Assessment">Assessment</option>
+          <option value="Interview">Interview</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="notes">Notes</label>
+        <textarea id="notes" rows="2" placeholder="Optional notes"></textarea>
+      </div>
+      <button type="submit" id="add-btn">Track This Job</button>
+    </form>
+
+    <!-- Feedback -->
+    <div id="message" class="message hidden"></div>
+
+    <!-- Recent Jobs -->
+    <div id="recent-section" class="recent-section">
+      <h2>Recent Jobs <button id="refresh-btn" class="icon-btn" title="Refresh">&#8635;</button></h2>
+      <div id="recent-jobs"></div>
+    </div>
+
+    <!-- Settings -->
+    <div class="settings">
+      <label for="backend-url">Backend URL</label>
+      <input type="text" id="backend-url" placeholder="http://localhost:8000">
+      <button id="save-settings" class="btn-sm">Save</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
