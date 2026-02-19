@@ -37,4 +37,32 @@ Print this at the end for a complete development history.
 - Documentation framework (DEVLOG, ARCHITECTURE, SETUP)
 - Git initialized
 
+### Milestone 1 Completed
+- FastAPI backend with CORS, request logging middleware, global error handler
+- Google Sheets client (gspread + service account auth, retry logic, connection pooling)
+- Job CRUD endpoints: POST/GET/PATCH/DELETE /jobs, PATCH /jobs/by-thread/{thread_id}
+- Health check endpoints: GET /health, GET /ready (verifies Sheets connection)
+- Dependency injection for SheetsClient singleton
+- Sheet column schema mapping (12 columns, auto-header creation)
+- UTF-8 console fix for Windows logging
+
+---
+
+## 2026-02-18 — Milestone 2: Tracker Bot
+
+### What Was Built
+- **BaseBot abstract class** (`bots/base.py`): httpx client, logger, start/stop lifecycle, error handling wrapper
+- **Tracker Bot CLI** (`bots/tracker_bot/run.py`): full CLI with subcommands:
+  - `add` — create new job application via POST /jobs
+  - `list` — list all jobs with optional status filter via GET /jobs
+  - `update` — update job fields via PATCH /jobs/{app_id}
+  - `delete` — soft-delete (archive) via DELETE /jobs/{app_id}
+- **Backend tests** (`tests/test_backend/test_jobs_router.py`): 13 tests with in-memory FakeSheetsClient
+- **GitHub repo created**: https://github.com/Nikhilvalaja/job-automation (public)
+
+### Design Decisions
+- BaseBot uses sync httpx.Client (not async) since bots run as separate processes
+- Tracker bot is CLI-only (no scheduling needed — it's a manual tool)
+- Tests use FastAPI dependency override with FakeSheetsClient — no Google credentials needed
+
 ---
