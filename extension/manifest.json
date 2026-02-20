@@ -1,11 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "Job Tracker",
-  "version": "1.0.0",
-  "description": "Track job applications from any job posting page. Adds jobs to your Google Sheets tracker via the backend API.",
+  "name": "Job Tracker Pro",
+  "version": "2.0.0",
+  "description": "Smart job application tracker. Auto-detects when you apply, captures full job details, tracks everything in Google Sheets.",
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "contextMenus",
+    "notifications",
+    "tabs"
   ],
   "host_permissions": [
     "http://localhost:8000/*"
@@ -23,18 +26,37 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
+  "commands": {
+    "quick-track": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+J",
+        "mac": "Command+Shift+J"
+      },
+      "description": "Quick-track the current page as a job application"
+    }
+  },
   "content_scripts": [
     {
       "matches": [
-        "*://*.linkedin.com/jobs/*",
+        "*://*.linkedin.com/*",
         "*://*.indeed.com/*",
-        "*://*.glassdoor.com/job-listing/*",
+        "*://*.glassdoor.com/*",
         "*://*.lever.co/*",
         "*://*.greenhouse.io/*",
         "*://*.myworkdayjobs.com/*",
-        "*://*.careers.*/*"
+        "*://*.ziprecruiter.com/*",
+        "*://*.dice.com/*",
+        "*://*.monster.com/*",
+        "*://*.angel.co/*",
+        "*://*.wellfound.com/*",
+        "*://*.builtin.com/*",
+        "*://*.simplyhired.com/*",
+        "*://*.careerbuilder.com/*",
+        "*://*.careers.*/*",
+        "*://*.jobs.*/*"
       ],
-      "js": ["content.js"],
+      "js": ["extractors.js", "content.js"],
+      "css": ["content-styles.css"],
       "run_at": "document_idle"
     }
   ],

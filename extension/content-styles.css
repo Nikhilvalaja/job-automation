@@ -1,0 +1,255 @@
+/* Job Tracker Pro — Content Script Styles (injected into job pages) */
+
+/* Floating Track Button */
+#jt-floating-btn {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 999999;
+  width: 56px;
+  height: 56px;
+  border-radius: 28px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  font-size: 24px;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#jt-floating-btn:hover {
+  background: #1d4ed8;
+  transform: scale(1.08);
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.5);
+}
+
+#jt-floating-btn.jt-tracked {
+  background: #22c55e;
+  pointer-events: none;
+}
+
+#jt-floating-btn.jt-loading {
+  background: #f59e0b;
+  pointer-events: none;
+}
+
+/* Tooltip */
+#jt-floating-btn::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  right: 64px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #1e293b;
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+#jt-floating-btn:hover::after {
+  opacity: 1;
+}
+
+/* Toast Notification */
+#jt-toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 999999;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateX(120%);
+  transition: transform 0.3s ease;
+}
+
+#jt-toast.jt-show {
+  transform: translateX(0);
+}
+
+#jt-toast.jt-success {
+  background: #22c55e;
+  color: #fff;
+}
+
+#jt-toast.jt-error {
+  background: #ef4444;
+  color: #fff;
+}
+
+#jt-toast.jt-warning {
+  background: #f59e0b;
+  color: #fff;
+}
+
+#jt-toast.jt-info {
+  background: #3b82f6;
+  color: #fff;
+}
+
+/* Apply Detection Indicator */
+#jt-apply-badge {
+  position: fixed;
+  bottom: 88px;
+  right: 24px;
+  z-index: 999998;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: #22c55e;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  animation: jt-pulse 2s infinite;
+}
+
+@keyframes jt-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* Preview Panel (slides in from right) */
+#jt-preview-panel {
+  position: fixed;
+  top: 0;
+  right: -420px;
+  z-index: 999998;
+  width: 400px;
+  height: 100vh;
+  background: #fff;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.1);
+  transition: right 0.3s ease;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#jt-preview-panel.jt-open {
+  right: 0;
+}
+
+.jt-panel-header {
+  padding: 16px;
+  background: #2563eb;
+  color: #fff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.jt-panel-header h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.jt-panel-close {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.jt-panel-body {
+  padding: 16px;
+}
+
+.jt-panel-field {
+  margin-bottom: 12px;
+}
+
+.jt-panel-field label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+}
+
+.jt-panel-field .jt-value {
+  font-size: 14px;
+  color: #1a1a1a;
+  padding: 4px 0;
+}
+
+.jt-panel-field .jt-value.jt-empty {
+  color: #d1d5db;
+  font-style: italic;
+}
+
+.jt-panel-field input,
+.jt-panel-field select {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.jt-skills-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.jt-skill-tag {
+  padding: 2px 8px;
+  background: #eff6ff;
+  color: #2563eb;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.jt-panel-actions {
+  padding: 16px;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  gap: 8px;
+}
+
+.jt-btn-primary {
+  flex: 1;
+  padding: 10px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.jt-btn-primary:hover {
+  background: #1d4ed8;
+}
+
+.jt-btn-secondary {
+  padding: 10px 16px;
+  background: #f3f4f6;
+  color: #374151;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.jt-btn-secondary:hover {
+  background: #e5e7eb;
+}

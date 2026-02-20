@@ -6,59 +6,130 @@
 </head>
 <body>
   <div class="container">
+    <!-- Header -->
     <header>
-      <h1>Job Tracker</h1>
-      <span id="status-dot" class="dot dot-disconnected" title="Backend status"></span>
+      <h1>Job Tracker Pro</h1>
+      <div class="header-right">
+        <span id="today-count" class="today-badge" title="Jobs tracked today">0 today</span>
+        <span id="status-dot" class="dot dot-disconnected" title="Backend status"></span>
+      </div>
     </header>
 
-    <!-- Add Job Form -->
-    <form id="add-form">
-      <div class="field">
-        <label for="company">Company *</label>
-        <input type="text" id="company" required placeholder="e.g. Google">
+    <!-- Quick Stats -->
+    <div id="quick-stats" class="quick-stats">
+      <div class="stat-card">
+        <div class="stat-num" id="stat-total">—</div>
+        <div class="stat-label">Total</div>
       </div>
-      <div class="field">
-        <label for="role">Role *</label>
-        <input type="text" id="role" required placeholder="e.g. Software Engineer">
+      <div class="stat-card stat-applied">
+        <div class="stat-num" id="stat-applied">—</div>
+        <div class="stat-label">Applied</div>
       </div>
-      <div class="field">
-        <label for="source">Source</label>
-        <input type="text" id="source" placeholder="e.g. LinkedIn, Indeed">
+      <div class="stat-card stat-interview">
+        <div class="stat-num" id="stat-interview">—</div>
+        <div class="stat-label">Interview</div>
       </div>
-      <div class="field">
-        <label for="job-url">Job URL</label>
-        <input type="text" id="job-url" readonly placeholder="Auto-filled from current page">
+      <div class="stat-card stat-offer">
+        <div class="stat-num" id="stat-offer">—</div>
+        <div class="stat-label">Offers</div>
       </div>
-      <div class="field">
-        <label for="job-status">Status</label>
-        <select id="job-status">
-          <option value="To Apply">To Apply</option>
-          <option value="Applied" selected>Applied</option>
-          <option value="Assessment">Assessment</option>
-          <option value="Interview">Interview</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="notes">Notes</label>
-        <textarea id="notes" rows="2" placeholder="Optional notes"></textarea>
-      </div>
-      <button type="submit" id="add-btn">Track This Job</button>
-    </form>
+    </div>
 
-    <!-- Feedback -->
-    <div id="message" class="message hidden"></div>
+    <!-- Tab Navigation -->
+    <div class="tabs">
+      <button class="tab active" data-tab="add">Add Job</button>
+      <button class="tab" data-tab="recent">Recent</button>
+      <button class="tab" data-tab="settings">Settings</button>
+    </div>
 
-    <!-- Recent Jobs -->
-    <div id="recent-section" class="recent-section">
-      <h2>Recent Jobs <button id="refresh-btn" class="icon-btn" title="Refresh">&#8635;</button></h2>
+    <!-- Tab: Add Job -->
+    <div id="tab-add" class="tab-content active">
+      <form id="add-form">
+        <div class="field-row">
+          <div class="field">
+            <label for="company">Company *</label>
+            <input type="text" id="company" required placeholder="e.g. Google">
+          </div>
+          <div class="field">
+            <label for="role">Role *</label>
+            <input type="text" id="role" required placeholder="e.g. Software Engineer">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="source">Source</label>
+            <input type="text" id="source" placeholder="Auto-detected">
+          </div>
+          <div class="field">
+            <label for="job-status">Status</label>
+            <select id="job-status">
+              <option value="To Apply">To Apply</option>
+              <option value="Applied" selected>Applied</option>
+              <option value="Assessment">Assessment</option>
+              <option value="Interview">Interview</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="job-url">Job URL</label>
+          <input type="text" id="job-url" readonly placeholder="Auto-filled from current page">
+        </div>
+        <div class="field">
+          <label for="notes">Notes</label>
+          <textarea id="notes" rows="2" placeholder="Salary, location, skills, etc."></textarea>
+        </div>
+        <button type="submit" id="add-btn">Track This Job</button>
+      </form>
+      <div id="message" class="message hidden"></div>
+      <div id="duplicate-warning" class="duplicate-warning hidden">
+        This URL is already being tracked. Adding will create a duplicate.
+      </div>
+    </div>
+
+    <!-- Tab: Recent Jobs -->
+    <div id="tab-recent" class="tab-content">
+      <div class="recent-header">
+        <span id="recent-count">Loading...</span>
+        <button id="refresh-btn" class="icon-btn" title="Refresh">&#8635;</button>
+      </div>
       <div id="recent-jobs"></div>
     </div>
 
-    <!-- Settings -->
-    <div class="settings">
-      <label for="backend-url">Backend URL</label>
-      <input type="text" id="backend-url" placeholder="http://localhost:8000">
-      <button id="save-settings" class="btn-sm">Save</button>
+    <!-- Tab: Settings -->
+    <div id="tab-settings" class="tab-content">
+      <div class="setting-group">
+        <label>Backend URL</label>
+        <div class="setting-row">
+          <input type="text" id="backend-url" placeholder="http://localhost:8000">
+          <button id="save-settings" class="btn-sm">Save</button>
+        </div>
+      </div>
+      <div class="setting-group">
+        <label>Keyboard Shortcut</label>
+        <div class="setting-value">Ctrl+Shift+J — Quick track from any page</div>
+      </div>
+      <div class="setting-group">
+        <label>Features</label>
+        <div class="feature-list">
+          <div class="feature-item">&#10003; Floating track button on job pages</div>
+          <div class="feature-item">&#10003; Auto-detect Apply button clicks</div>
+          <div class="feature-item">&#10003; Extract company, role, salary, location, skills</div>
+          <div class="feature-item">&#10003; Duplicate detection</div>
+          <div class="feature-item">&#10003; Right-click context menu</div>
+          <div class="feature-item">&#10003; Daily application counter</div>
+        </div>
+      </div>
+      <div class="setting-group">
+        <label>Supported Sites</label>
+        <div class="sites-list">
+          LinkedIn, Indeed, Glassdoor, Lever, Greenhouse, Workday,
+          ZipRecruiter, Wellfound, Dice, Monster, BuiltIn, SimplyHired,
+          CareerBuilder + any page with job details
+        </div>
+      </div>
+      <div class="setting-group">
+        <button id="open-dashboard" class="btn-full">Open Dashboard</button>
+      </div>
     </div>
   </div>
 

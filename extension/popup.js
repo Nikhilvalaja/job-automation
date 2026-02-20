@@ -1,12 +1,13 @@
 /**
- * Job Tracker — Chrome Extension Popup
+ * Job Tracker Pro — Popup Script v2
  *
- * Handles:
- * - Auto-fill job URL from current tab
- * - Auto-extract company/role from content script
- * - Add job via backend API (POST /jobs)
- * - Display recent tracked jobs (GET /jobs)
- * - Backend connection status indicator
+ * Features:
+ * - Tab navigation (Add Job / Recent / Settings)
+ * - Quick stats dashboard
+ * - Auto-extract from content script
+ * - Duplicate detection warning
+ * - Today's application count badge
+ * - Backend health check
  */
 
 const DEFAULT_BACKEND = "http://localhost:8000";
@@ -21,11 +22,30 @@ const statusSelect = document.getElementById("job-status");
 const notesInput = document.getElementById("notes");
 const addBtn = document.getElementById("add-btn");
 const messageDiv = document.getElementById("message");
+const duplicateWarning = document.getElementById("duplicate-warning");
 const recentDiv = document.getElementById("recent-jobs");
+const recentCount = document.getElementById("recent-count");
 const refreshBtn = document.getElementById("refresh-btn");
 const backendUrlInput = document.getElementById("backend-url");
 const saveSettingsBtn = document.getElementById("save-settings");
 const statusDot = document.getElementById("status-dot");
+const todayCountEl = document.getElementById("today-count");
+
+// Stat elements
+const statTotal = document.getElementById("stat-total");
+const statApplied = document.getElementById("stat-applied");
+const statInterview = document.getElementById("stat-interview");
+const statOffer = document.getElementById("stat-offer");
+
+// --- Tab Navigation ---
+document.querySelectorAll(".tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    document.querySelectorAll(".tab-content").forEach((c) => c.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById(`tab-${tab.dataset.tab}`).classList.add("active");
+  });
+});
 
 // --- Init ---
 document.addEventListener("DOMContentLoaded", async () => {
@@ -43,17 +63,31 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Try to get extracted data from content script
     if (tab?.id) {
       chrome.tabs.sendMessage(tab.id, { action: "extract" }, (response) => {
-        if (chrome.runtime.lastError) return; // Content script not loaded
+        if (chrome.runtime.lastError) return;
         if (response?.company && !companyInput.value) companyInput.value = response.company;
         if (response?.role && !roleInput.value) roleInput.value = response.role;
+        if (response?.source && !sourceInput.value) sourceInput.value = response.source;
+
+        // Auto-fill notes with extracted details
+        if (response && !notesInput.value) {
+          const parts = [];
+          if (response.salary) parts.push(`Salary: ${response.salary}`);
+          if (response.location) parts.push(`Location: ${response.location}`);
+          if (response.jobType) parts.push(response.jobType);
+          if (response.skills?.length) parts.push(`Skills: ${response.skills.slice(0, 5).join(", ")}`);
+          notesInput.value = parts.join(" | ");
+        }
       });
     }
   } catch (e) {
-    // Ignore — might not have tab permission
+    // Ignore
   }
 
   checkBackend(settings.backendUrl);
+  loadStats(settings.backendUrl);
   loadRecentJobs(settings.backendUrl);
+  loadTodayCount();
+  checkDuplicate(settings.backendUrl);
 });
 
 // --- Settings ---
@@ -82,18 +116,70 @@ async function checkBackend(baseUrl) {
     }
   } catch {
     statusDot.className = "dot dot-disconnected";
-    statusDot.title = "Backend unreachable";
+    statusDot.title = "Backend unreachable — start with: uvicorn backend.main:app --reload";
+  }
+}
+
+// --- Today Count ---
+async function loadTodayCount() {
+  try {
+    chrome.runtime.sendMessage({ action: "getBadgeCount" }, (response) => {
+      if (response?.count !== undefined) {
+        todayCountEl.textContent = `${response.count} today`;
+      }
+    });
+  } catch {
+    // Ignore
+  }
+}
+
+// --- Quick Stats ---
+async function loadStats(baseUrl) {
+  try {
+    const resp = await fetch(`${baseUrl}/jobs`, { signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const jobs = data.jobs || [];
+
+    statTotal.textContent = jobs.length;
+    statApplied.textContent = jobs.filter((j) => j.status === "Applied").length;
+    statInterview.textContent = jobs.filter((j) => j.status === "Interview").length;
+    statOffer.textContent = jobs.filter((j) => j.status === "Offer").length;
+  } catch {
+    // Stats stay as —
   }
 }
 
 // --- Detect Source from URL ---
 function detectSource(url) {
-  if (url.includes("linkedin.com")) sourceInput.value = "LinkedIn";
-  else if (url.includes("indeed.com")) sourceInput.value = "Indeed";
-  else if (url.includes("glassdoor.com")) sourceInput.value = "Glassdoor";
-  else if (url.includes("lever.co")) sourceInput.value = "Lever";
-  else if (url.includes("greenhouse.io")) sourceInput.value = "Greenhouse";
-  else if (url.includes("myworkdayjobs.com")) sourceInput.value = "Workday";
+  const sources = {
+    "linkedin.com": "LinkedIn", "indeed.com": "Indeed", "glassdoor.com": "Glassdoor",
+    "lever.co": "Lever", "greenhouse.io": "Greenhouse", "myworkdayjobs.com": "Workday",
+    "ziprecruiter.com": "ZipRecruiter", "wellfound.com": "Wellfound", "angel.co": "Wellfound",
+    "dice.com": "Dice", "monster.com": "Monster", "builtin.com": "BuiltIn",
+    "simplyhired.com": "SimplyHired", "careerbuilder.com": "CareerBuilder",
+  };
+  for (const [domain, name] of Object.entries(sources)) {
+    if (url.includes(domain)) { sourceInput.value = name; return; }
+  }
+}
+
+// --- Duplicate Check ---
+async function checkDuplicate(baseUrl) {
+  const url = jobUrlInput.value;
+  if (!url) return;
+  try {
+    const resp = await fetch(`${baseUrl}/jobs`, { signal: AbortSignal.timeout(3000) });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const dup = (data.jobs || []).find((j) => j.job_url === url);
+    if (dup) {
+      duplicateWarning.classList.remove("hidden");
+      duplicateWarning.textContent = `Already tracked: "${dup.company} / ${dup.role}" (${dup.status})`;
+    }
+  } catch {
+    // Ignore
+  }
 }
 
 // --- Add Job ---
@@ -123,10 +209,15 @@ form.addEventListener("submit", async (e) => {
 
     if (resp.status === 201) {
       const job = await resp.json();
-      showMessage(`Added: ${job.company} / ${job.role}`, "success");
+      showMessage(`Tracked: ${job.company} / ${job.role}`, "success");
       form.reset();
-      jobUrlInput.value = payload.job_url; // Keep the URL
+      jobUrlInput.value = payload.job_url;
       loadRecentJobs(settings.backendUrl);
+      loadStats(settings.backendUrl);
+
+      // Update badge
+      chrome.runtime.sendMessage({ action: "jobTracked", job: payload });
+      loadTodayCount();
     } else {
       const err = await resp.text();
       showMessage(`Error: ${resp.status} — ${err}`, "error");
@@ -146,10 +237,12 @@ async function loadRecentJobs(baseUrl) {
     if (!resp.ok) throw new Error(`${resp.status}`);
 
     const data = await resp.json();
-    const jobs = (data.jobs || []).slice(0, 5); // Show last 5
+    const jobs = (data.jobs || []).slice(0, 8);
+
+    recentCount.textContent = `${data.jobs?.length || 0} total jobs`;
 
     if (jobs.length === 0) {
-      recentDiv.innerHTML = '<div class="no-jobs">No tracked jobs yet.</div>';
+      recentDiv.innerHTML = '<div class="no-jobs">No tracked jobs yet. Add your first one!</div>';
       return;
     }
 
@@ -169,13 +262,21 @@ async function loadRecentJobs(baseUrl) {
       })
       .join("");
   } catch {
-    recentDiv.innerHTML = '<div class="no-jobs">Could not load jobs.</div>';
+    recentDiv.innerHTML = '<div class="no-jobs">Could not load jobs. Is the backend running?</div>';
+    recentCount.textContent = "—";
   }
 }
 
 refreshBtn.addEventListener("click", async () => {
   const settings = await getSettings();
   loadRecentJobs(settings.backendUrl);
+  loadStats(settings.backendUrl);
+  loadTodayCount();
+});
+
+// --- Open Dashboard ---
+document.getElementById("open-dashboard")?.addEventListener("click", () => {
+  chrome.tabs.create({ url: "http://localhost:8501" });
 });
 
 // --- Helpers ---
@@ -184,9 +285,7 @@ function showMessage(text, type) {
   messageDiv.className = `message ${type}`;
 }
 
-function hideMessage() {
-  messageDiv.className = "message hidden";
-}
+function hideMessage() { messageDiv.className = "message hidden"; }
 
 function getBadgeClass(status) {
   const s = (status || "").toLowerCase();

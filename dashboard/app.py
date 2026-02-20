@@ -1,16 +1,21 @@
 """Job Automation Dashboard — Streamlit + Plotly.
 
-Provides a visual overview of all tracked job applications:
-- KPI cards (total, applied, interviews, offers, rejections)
-- Status distribution pie chart
-- Applications timeline
-- Source breakdown bar chart
-- Full job table with filtering, sorting, and inline status updates
+Full-featured dashboard with:
+- KPI cards (total, applied, replied, interviews, offers, rejections)
+- Status distribution, source breakdown, application timeline charts
+- Response rate & conversion funnel
+- Job table with filtering, sorting, inline status updates
+- Bot Control Center — start/stop individual bots
+- Email Classification Rules — view, add, modify rules
+- Sites/Sources tracker
 
 Run: streamlit run dashboard/app.py
 """
 
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 import httpx
 import pandas as pd
@@ -145,7 +150,6 @@ def render_sidebar():
 
     st.sidebar.divider()
 
-    # Refresh button
     if st.sidebar.button("Refresh Data"):
         st.cache_data.clear()
         st.rerun()
@@ -155,21 +159,30 @@ def render_sidebar():
 
 # --- KPI Cards ---
 def render_kpis(df: pd.DataFrame):
-    """Render KPI metric cards."""
+    """Render KPI metric cards with response rate."""
     total = len(df)
     applied = len(df[df["status"] == "Applied"])
     interviews = len(df[df["status"] == "Interview"])
     offers = len(df[df["status"] == "Offer"])
     rejected = len(df[df["status"] == "Rejected"])
     no_reply = len(df[df["status"] == "No Reply"])
+    assessment = len(df[df["status"] == "Assessment"])
 
-    cols = st.columns(6)
+    # Response rate = (interview + offer + rejected + assessment) / (applied + interview + offer + rejected + no_reply + assessment)
+    sent_out = applied + interviews + offers + rejected + no_reply + assessment
+    got_reply = interviews + offers + rejected + assessment
+    response_rate = (got_reply / sent_out * 100) if sent_out > 0 else 0
+    sources_count = df["source"].nunique() if "source" in df.columns else 0
+
+    cols = st.columns(8)
     cols[0].metric("Total", total)
     cols[1].metric("Applied", applied)
-    cols[2].metric("Interviews", interviews)
-    cols[3].metric("Offers", offers)
-    cols[4].metric("Rejected", rejected)
-    cols[5].metric("No Reply", no_reply)
+    cols[2].metric("Replied", got_reply)
+    cols[3].metric("Interviews", interviews)
+    cols[4].metric("Offers", offers)
+    cols[5].metric("Rejected", rejected)
+    cols[6].metric("Response Rate", f"{response_rate:.0f}%")
+    cols[7].metric("Sources", sources_count)
 
 
 # --- Charts ---
@@ -183,7 +196,6 @@ def render_charts(df: pd.DataFrame):
         if len(df) > 0:
             status_counts = df["status"].value_counts().reset_index()
             status_counts.columns = ["status", "count"]
-            colors = [STATUS_COLORS.get(s, "#94a3b8") for s in status_counts["status"]]
 
             fig = px.pie(
                 status_counts,
@@ -230,43 +242,78 @@ def render_charts(df: pd.DataFrame):
         else:
             st.caption("No data yet.")
 
+    # Row 2: Timeline + Funnel
+    col3, col4 = st.columns(2)
+
     # Timeline Chart
-    st.subheader("Application Timeline")
-    if len(df) > 0 and "date_applied" in df.columns:
-        timeline_df = df[df["date_applied"] != ""].copy()
-        if len(timeline_df) > 0:
-            timeline_df["date"] = pd.to_datetime(timeline_df["date_applied"], errors="coerce")
-            timeline_df = timeline_df.dropna(subset=["date"])
-
+    with col3:
+        st.subheader("Application Timeline")
+        if len(df) > 0 and "date_applied" in df.columns:
+            timeline_df = df[df["date_applied"] != ""].copy()
             if len(timeline_df) > 0:
-                daily = timeline_df.groupby(timeline_df["date"].dt.date).size().reset_index(name="count")
-                daily.columns = ["date", "count"]
-                daily["cumulative"] = daily["count"].cumsum()
+                timeline_df["date"] = pd.to_datetime(timeline_df["date_applied"], errors="coerce")
+                timeline_df = timeline_df.dropna(subset=["date"])
 
-                fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    x=daily["date"], y=daily["count"],
-                    name="Daily", marker_color="#93c5fd",
-                ))
-                fig.add_trace(go.Scatter(
-                    x=daily["date"], y=daily["cumulative"],
-                    name="Cumulative", line=dict(color="#2563eb", width=2),
-                    yaxis="y2",
-                ))
-                fig.update_layout(
-                    margin=dict(t=20, b=20, l=20, r=20),
-                    height=250,
-                    yaxis=dict(title="Daily"),
-                    yaxis2=dict(title="Cumulative", overlaying="y", side="right"),
-                    legend=dict(orientation="h", y=1.1),
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                if len(timeline_df) > 0:
+                    daily = timeline_df.groupby(timeline_df["date"].dt.date).size().reset_index(name="count")
+                    daily.columns = ["date", "count"]
+                    daily["cumulative"] = daily["count"].cumsum()
+
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        x=daily["date"], y=daily["count"],
+                        name="Daily", marker_color="#93c5fd",
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=daily["date"], y=daily["cumulative"],
+                        name="Cumulative", line=dict(color="#2563eb", width=2),
+                        yaxis="y2",
+                    ))
+                    fig.update_layout(
+                        margin=dict(t=20, b=20, l=20, r=20),
+                        height=280,
+                        yaxis=dict(title="Daily"),
+                        yaxis2=dict(title="Cumulative", overlaying="y", side="right"),
+                        legend=dict(orientation="h", y=1.1),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.caption("No valid dates.")
             else:
-                st.caption("No valid dates.")
+                st.caption("No date data.")
         else:
-            st.caption("No date data.")
-    else:
-        st.caption("No data yet.")
+            st.caption("No data yet.")
+
+    # Conversion Funnel
+    with col4:
+        st.subheader("Conversion Funnel")
+        if len(df) > 0:
+            stages = ["Applied", "Assessment", "Interview", "Offer"]
+            counts = []
+            for stage in stages:
+                # Count all jobs that reached this stage or beyond
+                stage_idx = stages.index(stage)
+                later_stages = stages[stage_idx:]
+                count = len(df[df["status"].isin(later_stages)])
+                counts.append(count)
+
+            # Add total as top of funnel
+            stages_full = ["Total Tracked"] + stages
+            counts_full = [len(df)] + counts
+
+            fig = go.Figure(go.Funnel(
+                y=stages_full,
+                x=counts_full,
+                textinfo="value+percent initial",
+                marker=dict(color=["#94a3b8", "#3b82f6", "#a855f7", "#f59e0b", "#22c55e"]),
+            ))
+            fig.update_layout(
+                margin=dict(t=20, b=20, l=20, r=20),
+                height=280,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.caption("No data yet.")
 
 
 # --- Job Table ---
@@ -351,6 +398,163 @@ def render_table(df: pd.DataFrame, backend_url: str):
                 st.error("Update failed.")
 
 
+# --- Bot Control Center ---
+def render_bot_controls():
+    """Render bot control panel with status and actions."""
+    st.subheader("Bot Control Center")
+
+    settings = get_settings()
+
+    bots_config = [
+        {
+            "name": "Email Bot",
+            "desc": "Monitors Gmail for job application status updates",
+            "schedule": f"Every {settings.email_bot_interval_minutes} minutes",
+            "command": "python -m bots.email_bot.run",
+            "dry_run": "python -m bots.email_bot.run --dry-run",
+        },
+        {
+            "name": "Reminder Bot",
+            "desc": f"Detects stale applications (>{settings.followup_threshold_days} days) and sends Telegram alerts",
+            "schedule": f"Daily at {settings.reminder_bot_hour:02d}:{settings.reminder_bot_minute:02d}",
+            "command": "python -m bots.reminder_bot.run",
+            "dry_run": "python -m bots.reminder_bot.run --dry-run",
+        },
+        {
+            "name": "Tracker Bot",
+            "desc": "CLI tool for manually adding/managing job applications",
+            "schedule": "Manual (CLI only)",
+            "command": "python -m bots.tracker_bot.run",
+            "dry_run": "python -m bots.tracker_bot.run list",
+        },
+        {
+            "name": "Orchestrator",
+            "desc": "Central scheduler that runs all bots automatically",
+            "schedule": "Continuous",
+            "command": "python -m bots.orchestrator.run",
+            "dry_run": "python -m bots.orchestrator.run --status",
+        },
+    ]
+
+    for bot in bots_config:
+        with st.expander(f"**{bot['name']}** — {bot['schedule']}"):
+            st.caption(bot["desc"])
+            col1, col2 = st.columns(2)
+            with col1:
+                st.code(bot["command"], language="bash")
+            with col2:
+                st.code(bot["dry_run"], language="bash")
+
+
+# --- Email Classification Rules ---
+def render_rules():
+    """Render email classification rules editor."""
+    st.subheader("Email Classification Rules")
+    st.caption("These rules determine how incoming emails are classified. Higher priority wins on conflicts.")
+
+    try:
+        from src.gmail.rules import DEFAULT_RULES
+        rules_data = []
+        for rule in DEFAULT_RULES:
+            rules_data.append({
+                "Rule Name": rule.name,
+                "Maps to Status": rule.status.value,
+                "Priority": rule.priority,
+                "Keywords (subject)": ", ".join(rule.subject_keywords[:5]) + ("..." if len(rule.subject_keywords) > 5 else ""),
+                "Keywords (body)": ", ".join(rule.body_keywords[:5]) + ("..." if len(rule.body_keywords) > 5 else ""),
+            })
+
+        rules_df = pd.DataFrame(rules_data)
+        st.dataframe(rules_df, use_container_width=True, hide_index=True)
+    except ImportError:
+        st.info("Email rules module not available.")
+
+    # Custom rules builder
+    st.divider()
+    st.subheader("Add Custom Rule")
+    st.caption("Add your own keywords to improve classification accuracy. Custom rules are saved locally.")
+
+    custom_rules_path = Path(get_settings().log_path).parent / "custom_rules.json"
+
+    # Load existing custom rules
+    custom_rules = []
+    if custom_rules_path.exists():
+        try:
+            custom_rules = json.loads(custom_rules_path.read_text())
+        except Exception:
+            custom_rules = []
+
+    with st.form("custom_rule_form"):
+        cr_col1, cr_col2 = st.columns(2)
+        with cr_col1:
+            rule_name = st.text_input("Rule Name", placeholder="e.g. My Company Reject Pattern")
+            target_status = st.selectbox("Maps to Status", ["Rejected", "Interview", "Assessment", "Applied", "Offer"])
+        with cr_col2:
+            subject_kw = st.text_input("Subject Keywords (comma-separated)", placeholder="e.g. regret, sorry")
+            body_kw = st.text_input("Body Keywords (comma-separated)", placeholder="e.g. not a fit, passed")
+
+        if st.form_submit_button("Add Rule"):
+            if rule_name and (subject_kw or body_kw):
+                new_rule = {
+                    "name": rule_name,
+                    "status": target_status,
+                    "subject_keywords": [k.strip() for k in subject_kw.split(",") if k.strip()],
+                    "body_keywords": [k.strip() for k in body_kw.split(",") if k.strip()],
+                }
+                custom_rules.append(new_rule)
+                custom_rules_path.write_text(json.dumps(custom_rules, indent=2))
+                st.success(f"Rule '{rule_name}' saved!")
+            else:
+                st.error("Rule name and at least one keyword required.")
+
+    # Display custom rules
+    if custom_rules:
+        st.caption(f"{len(custom_rules)} custom rule(s)")
+        for i, rule in enumerate(custom_rules):
+            with st.expander(f"{rule['name']} → {rule['status']}"):
+                st.write(f"**Subject keywords:** {', '.join(rule.get('subject_keywords', []))}")
+                st.write(f"**Body keywords:** {', '.join(rule.get('body_keywords', []))}")
+                if st.button(f"Delete", key=f"del_rule_{i}"):
+                    custom_rules.pop(i)
+                    custom_rules_path.write_text(json.dumps(custom_rules, indent=2))
+                    st.rerun()
+
+
+# --- Sites Tracker ---
+def render_sites(df: pd.DataFrame):
+    """Show which job sites/sources are being tracked."""
+    st.subheader("Sites & Sources Tracked")
+
+    if len(df) == 0 or "source" not in df.columns:
+        st.info("No source data yet.")
+        return
+
+    source_stats = df[df["source"] != ""].groupby("source").agg(
+        total=("app_id", "count"),
+        applied=("status", lambda x: (x == "Applied").sum()),
+        replied=("status", lambda x: x.isin(["Interview", "Offer", "Rejected", "Assessment"]).sum()),
+    ).reset_index()
+
+    source_stats["response_rate"] = (
+        source_stats["replied"] / source_stats["total"] * 100
+    ).round(1)
+
+    source_stats = source_stats.sort_values("total", ascending=False)
+
+    st.dataframe(
+        source_stats,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "source": st.column_config.TextColumn("Source", width="medium"),
+            "total": st.column_config.NumberColumn("Total Jobs", width="small"),
+            "applied": st.column_config.NumberColumn("Applied", width="small"),
+            "replied": st.column_config.NumberColumn("Got Reply", width="small"),
+            "response_rate": st.column_config.NumberColumn("Response %", format="%.1f%%", width="small"),
+        },
+    )
+
+
 # --- Main ---
 def main():
     backend_url = render_sidebar()
@@ -359,21 +563,38 @@ def main():
     if not jobs:
         st.title("Job Tracker Dashboard")
         st.info("No jobs tracked yet. Add your first job from the sidebar, Chrome extension, or CLI.")
+        render_bot_controls()
         return
 
     df = pd.DataFrame(jobs)
 
-    # Fill missing columns with empty strings
     for col in ["status", "source", "date_applied", "company", "role", "notes", "app_id"]:
         if col not in df.columns:
             df[col] = ""
 
     st.title("Job Tracker Dashboard")
-    render_kpis(df)
-    st.divider()
-    render_charts(df)
-    st.divider()
-    render_table(df, backend_url)
+
+    # Main tabs
+    tab_overview, tab_table, tab_bots, tab_rules, tab_sites = st.tabs(
+        ["Overview", "Applications", "Bot Controls", "Email Rules", "Sites & Sources"]
+    )
+
+    with tab_overview:
+        render_kpis(df)
+        st.divider()
+        render_charts(df)
+
+    with tab_table:
+        render_table(df, backend_url)
+
+    with tab_bots:
+        render_bot_controls()
+
+    with tab_rules:
+        render_rules()
+
+    with tab_sites:
+        render_sites(df)
 
 
 if __name__ == "__main__":

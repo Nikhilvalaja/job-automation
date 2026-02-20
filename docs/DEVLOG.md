@@ -200,3 +200,29 @@ Print this at the end for a complete development history.
 - Responsive layout with wide mode for better chart display
 
 ---
+
+## 2026-02-19 — Extension v2 + Dashboard v2 Upgrade
+
+### Chrome Extension v2
+- **Floating track button** on all job pages — one-click save with preview panel
+- **Auto-detect Apply clicks** — monitors Easy Apply, Submit, Apply Now buttons and auto-tracks
+- **Full page extraction** — company, role, salary, location, job type, skills, description
+- **Modular extractors** (`extension/extractors.js`): LinkedIn, Indeed, Glassdoor, Lever, Greenhouse, Workday, ZipRecruiter, Wellfound + generic fallback
+- **Context menu** — right-click "Track This Job" on any page
+- **Keyboard shortcut** — Ctrl+Shift+J to quick-track
+- **Badge counter** — shows today's application count on extension icon
+- **Duplicate detection** — checks URL before adding, warns if already tracked
+- **Toast notifications** — visual feedback for all actions
+- **Preview panel** — slide-in panel showing extracted details before saving
+- **14 supported job sites** (LinkedIn, Indeed, Glassdoor, Lever, Greenhouse, Workday, ZipRecruiter, Dice, Monster, Wellfound, BuiltIn, SimplyHired, CareerBuilder + generic)
+
+### Dashboard v2
+- **5 tabs**: Overview, Applications, Bot Controls, Email Rules, Sites & Sources
+- **Response rate KPI** — tracks what % of applications got replies
+- **Conversion funnel** — Total → Applied → Assessment → Interview → Offer
+- **Bot Control Center** — shows all 4 bots with commands, schedules, dry-run options
+- **Email Classification Rules** — view built-in rules, add custom rules with keywords
+- **Sites & Sources tracker** — per-source stats with response rates
+- **8 KPI cards** (total, applied, replied, interviews, offers, rejected, response rate, sources count)
+
+---
