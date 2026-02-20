@@ -1263,6 +1263,197 @@ def _render_studio_skill_transfer(backend_url: str):
             st.warning("Enter skills in both fields.")
 
 
+# --- CRM ---
+def render_crm(backend_url: str):
+    """CRM tab — contacts table, Today's Actions, thread history."""
+    st.subheader("CRM — Contacts & Outreach")
+    st.caption("Track recruiters, hiring managers, and all outreach activity.")
+
+    crm_tab1, crm_tab2, crm_tab3 = st.tabs(["Today's Actions", "Contacts", "Add Contact"])
+
+    # ---- Today's Actions ----
+    with crm_tab1:
+        try:
+            r = requests.get(f"{backend_url}/crm/actions", timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            actions = data.get("actions", [])
+        except Exception as e:
+            st.error(f"Failed to load actions: {e}")
+            actions = []
+
+        # Stats row
+        try:
+            sr = requests.get(f"{backend_url}/crm/stats", timeout=10)
+            sr.raise_for_status()
+            stats = sr.json()
+        except Exception:
+            stats = {}
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Contacts", stats.get("total_contacts", 0))
+        c2.metric("Follow-ups Due", stats.get("follow_ups_due", 0))
+        c3.metric("Replied", stats.get("replied_count", 0))
+        reply_rate = stats.get("reply_rate", 0)
+        c4.metric("Reply Rate", f"{reply_rate:.0%}")
+
+        st.divider()
+
+        if not actions:
+            st.success("No follow-ups due today.")
+        else:
+            st.markdown(f"**{len(actions)} follow-up(s) due**")
+            for action in actions:
+                can = action.get("can_contact", True)
+                block = action.get("block_reason", "")
+                label = action.get("action_label", "Follow up")
+                stage = action.get("stage", "")
+                name = action.get("name", "Unknown")
+                company = action.get("company", "")
+                email = action.get("email", "")
+                fu_count = action.get("follow_up_count", 0)
+
+                color = "🟢" if can else "🔴"
+                with st.expander(f"{color} {name} @ {company} — {label} (f/u #{fu_count})", expanded=False):
+                    cols = st.columns(3)
+                    cols[0].write(f"**Email:** {email}")
+                    cols[1].write(f"**Stage:** {stage}")
+                    cols[2].write(f"**Next stage:** {action.get('recommended_next_stage', '—')}")
+                    if not can:
+                        st.warning(f"Blocked: {block}")
+                    else:
+                        new_stage = action.get("recommended_next_stage")
+                        suggested = action.get("suggested_followup_date", "")
+                        btn_key = f"advance_{action.get('conv_id', name)}"
+                        if new_stage and st.button(f"Mark as {new_stage}", key=btn_key):
+                            try:
+                                ur = requests.patch(
+                                    f"{backend_url}/crm/conversations/{action['conv_id']}/stage",
+                                    json={"stage": new_stage, "next_follow_up": suggested},
+                                    timeout=10,
+                                )
+                                if ur.status_code == 200:
+                                    st.success(f"Stage updated to {new_stage}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Error: {ur.text}")
+                            except Exception as e:
+                                st.error(str(e))
+
+    # ---- Contacts Table ----
+    with crm_tab2:
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
+        with filter_col1:
+            status_filter = st.selectbox("Status", ["", "active", "cold", "blocked", "archived"], index=0, key="crm_status_filter")
+        with filter_col2:
+            company_filter = st.text_input("Company", "", key="crm_company_filter")
+        with filter_col3:
+            role_filter = st.selectbox("Role", ["", "recruiter", "hiring_manager", "engineer", "unknown"], index=0, key="crm_role_filter")
+
+        try:
+            params = {}
+            if status_filter:
+                params["status"] = status_filter
+            if company_filter:
+                params["company"] = company_filter
+            if role_filter:
+                params["role"] = role_filter
+            cr = requests.get(f"{backend_url}/crm/contacts", params=params, timeout=10)
+            cr.raise_for_status()
+            contacts = cr.json().get("contacts", [])
+        except Exception as e:
+            st.error(f"Failed to load contacts: {e}")
+            contacts = []
+
+        if not contacts:
+            st.info("No contacts found. Add one below or run the CRM bot to scan Gmail.")
+        else:
+            import pandas as pd
+            df_crm = pd.DataFrame([{
+                "Name": c.get("name", ""),
+                "Email": c.get("email", ""),
+                "Company": c.get("company", ""),
+                "Role": c.get("role", ""),
+                "Status": c.get("status", ""),
+                "Touchpoints": c.get("total_touchpoints", 0),
+                "Last Contact": (c.get("last_contacted_at") or "")[:10],
+                "ID": c.get("id", ""),
+            } for c in contacts])
+
+            st.dataframe(df_crm.drop(columns=["ID"]), use_container_width=True, height=400)
+
+            # Thread history for selected contact
+            st.markdown("**View thread history:**")
+            contact_options = {f"{c.get('name', '')} ({c.get('email', '')})": c["id"] for c in contacts}
+            selected_contact = st.selectbox("Select contact", list(contact_options.keys()), key="crm_contact_select")
+            if selected_contact:
+                sel_id = contact_options[selected_contact]
+                try:
+                    tr = requests.get(f"{backend_url}/crm/contacts/{sel_id}/touchpoints", timeout=10)
+                    tr.raise_for_status()
+                    touchpoints = tr.json().get("touchpoints", [])
+                except Exception:
+                    touchpoints = []
+
+                if touchpoints:
+                    for tp in touchpoints:
+                        direction = tp.get("direction", "outbound")
+                        icon = "→" if direction == "outbound" else "←"
+                        date = (tp.get("occurred_at") or "")[:10]
+                        ttype = tp.get("type", "")
+                        subject = tp.get("subject", "No subject")
+                        summary = tp.get("summary", "")
+                        st.markdown(f"`{date}` {icon} **{ttype}** — {subject}")
+                        if summary:
+                            st.caption(summary)
+                else:
+                    st.info("No touchpoints recorded.")
+
+                # Archive button
+                if st.button("Archive this contact", key=f"archive_{sel_id}"):
+                    try:
+                        dr = requests.delete(f"{backend_url}/crm/contacts/{sel_id}", timeout=10)
+                        if dr.status_code == 200:
+                            st.success("Contact archived.")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
+    # ---- Add Contact ----
+    with crm_tab3:
+        with st.form("add_contact_form"):
+            ac1, ac2 = st.columns(2)
+            with ac1:
+                add_name = st.text_input("Name")
+                add_email = st.text_input("Email *")
+                add_company = st.text_input("Company")
+            with ac2:
+                add_role = st.selectbox("Role", ["unknown", "recruiter", "hiring_manager", "engineer"])
+                add_notes = st.text_area("Notes", height=80)
+                add_linkedin = st.text_input("LinkedIn URL")
+
+            submitted = st.form_submit_button("Add Contact")
+            if submitted:
+                if not add_email:
+                    st.error("Email is required.")
+                else:
+                    try:
+                        ar = requests.post(
+                            f"{backend_url}/crm/contacts",
+                            json={
+                                "email": add_email, "name": add_name,
+                                "company": add_company, "role": add_role,
+                                "notes": add_notes, "linkedin_url": add_linkedin,
+                                "source": "manual",
+                            },
+                            timeout=10,
+                        )
+                        ar.raise_for_status()
+                        st.success(f"Contact '{add_name or add_email}' added.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+
 # --- Job Discovery ---
 def render_discovery(backend_url: str):
     """Render job discovery browser with score colors, skill gaps, JD analysis, and resume suggestion."""
@@ -1836,11 +2027,11 @@ def main():
 
     st.title("JobPilot Dashboard")
 
-    # Main tabs — 9 tabs now
+    # Main tabs — 10 tabs
     (tab_overview, tab_disc, tab_table, tab_my_resumes,
-     tab_cover, tab_resume, tab_bots, tab_rules, tab_sites) = st.tabs(
+     tab_cover, tab_resume, tab_crm, tab_bots, tab_rules, tab_sites) = st.tabs(
         ["Overview", "Job Discovery", "Applications", "My Resumes",
-         "Cover Letter", "Resume Studio", "Bot Controls", "Email Rules", "Sites & Sources"]
+         "Cover Letter", "Resume Studio", "CRM", "Bot Controls", "Email Rules", "Sites & Sources"]
     )
 
     with tab_overview:
@@ -1862,6 +2053,9 @@ def main():
 
     with tab_resume:
         render_resume_tailor(df, backend_url)
+
+    with tab_crm:
+        render_crm(backend_url)
 
     with tab_bots:
         render_bot_controls()
