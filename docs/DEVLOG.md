@@ -321,3 +321,35 @@ Print this at the end for a complete development history.
 - **159/159 tests passing**: 14 backend + 89 discovery + 24 email + 12 orchestrator + 11 reminder + 9 cover letter
 
 ---
+
+## 2026-02-20 — Roadmap v2: Resume Intelligence Engine
+
+### What Changed
+Major roadmap restructure to integrate the Resume Optimization Engine into the milestone plan.
+
+**Old M10** was "ML Scoring Layer" — basic embeddings + skill NER.
+
+**New M10** is "Resume Intelligence Engine" — a full 5-module system:
+1. JD Ingestion & Normalization (upgrade parser.py, must-have vs nice-to-have)
+2. Resume Structure Engine (bullets, tools, metrics, skill inventory master list)
+3. Embedding & Similarity Engine (OpenAI embeddings, weighted scoring formula)
+4. Controlled Rewrite Engine (M11 — LLM under strict constraints)
+5. Validation Engine (M11 — zero tolerance for hallucination)
+
+**Milestone shift:**
+- Old: M10 Scoring → M11 CRM → M12 Signals → M13 Outreach → M14 Referral → M15 Dashboard
+- New: M10 Resume Intelligence → M11 Resume Optimizer → M12 CRM → M13 Signals → M14 Outreach → M15 Referral → M16 Dashboard
+
+### Philosophy Established
+- "Deterministic first, LLM second, Validation always"
+- Never invent experience, never fabricate skills
+- skill_inventory_master_list is the ONLY allowed skill injection pool
+- Every LLM rewrite validated: word count ±3, no new skills, metrics preserved, embedding sim ≥0.9
+
+### Success Metrics Defined
+- 0 hallucinated skills (zero tolerance)
+- Rewrite rejection rate < 20%
+- Bullet semantic similarity ≥ 0.9
+- Reduced manual tailoring time by 60%
+
+---

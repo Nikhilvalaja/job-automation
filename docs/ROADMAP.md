@@ -1,5 +1,8 @@
 # Roadmap — Job Automation Ecosystem
 
+> Personal job search platform — as powerful as LinkedIn/Indeed, built for one user.
+> Deterministic logic first. LLM second. Validation always.
+
 ## Completed Milestones (M0-M9)
 
 | # | Milestone | What It Does | Tests |
@@ -19,164 +22,375 @@
 
 ---
 
+## System Philosophy
+
+```
+This is NOT a free-form LLM rewriting tool.
+This is a CONSTRAINED OPTIMIZATION ENGINE.
+
+Deterministic logic first.    → Rules, regex, dictionaries
+LLM second.                   → Only where rules can't reach
+Validation always.            → Every LLM output is checked
+Human approves.               → Bot drafts, you decide
+
+Never invents experience.
+Never fabricates skills.
+Never violates word constraints.
+```
+
+---
+
 ## Architecture Vision
 
 ```
-                    DATA LAYER                    INTELLIGENCE LAYER           ACTION LAYER
-              (what we're allowed               (ML decides what             (bots execute
-               to collect)                       matters)                     within rules)
-              +-----------------+               +------------------+         +----------------+
-              |  Gmail API      |               | Job Relevance    |         | Draft Messages |
-              |  (own emails)   |----+          | Scorer (embed)   |---+     | (you approve)  |
-              +-----------------+    |          +------------------+   |     +----------------+
-              |  Public RSS/    |    |          | Hiring Signal    |   |     | Create Tasks / |
-              |  Career Pages   |----+--------> | Classifier       |---+---->| Reminders      |
-              +-----------------+    |          +------------------+   |     +----------------+
-              |  Public APIs    |    |          | Reply Likelihood |   |     | Update Tracker |
-              |  (USAJobs,etc)  |----+          | Predictor        |---+     +----------------+
-              +-----------------+    |          +------------------+   |     | Send Notifs    |
-              |  Own Files      |    |          | Next Best Action |   |     | (Telegram)     |
-              |  (resume,notes) |----+          | Recommender      |---+     +----------------+
-              +-----------------+               +------------------+
+    DATA LAYER                     INTELLIGENCE LAYER              ACTION LAYER
++------------------+             +------------------------+      +------------------+
+| Job Feeds (297)  |------+      | JD Normalizer (M10)    |---+  | Resume Optimizer |
+| (GH/Lever/Ashby) |      |      | (must-have/nice-have)  |   |  | (M11) — rewrite  |
++------------------+      |      +------------------------+   |  | under constraints|
+| Public APIs      |------+----> | Resume Structure (M10) |---+->+------------------+
+| (RemoteOK, etc)  |      |      | (bullets, skills, emb) |   |  | Outreach Copilot |
++------------------+      |      +------------------------+   |  | (M14) — drafts,  |
+| Gmail API        |------+      | Scoring Engine (M10)   |---+  | you approve      |
+| (own emails)     |      |      | (weighted formula)     |   |  +------------------+
++------------------+      |      +------------------------+   |  | CRM Bot (M12)    |
+| News/Press/WARN  |------+      | Signal Classifier      |---+  | contacts, follow |
+| (M13 signals)    |      |      | (M13) — hiring predict |   |  | ups, cooldowns   |
++------------------+      |      +------------------------+   |  +------------------+
+| Own Files        |------+      | Validation Engine      |---+  | Notifier         |
+| (resume, notes)  |             | (M11) — zero tolerance |      | (alerts only)    |
++------------------+             +------------------------+      +------------------+
 ```
 
-### 6 Bots (Final State)
+### 7 Bots (Final State)
 
 | Bot | Role | Schedule |
 |-----|------|----------|
 | **Collector Bot** (M9, done) | ATS/boards/RSS -> normalize -> dedupe -> store | Every 30-120 min (adaptive) |
-| **Signal Bot** (M12) | News/press/contracts/WARN -> company hiring score | Every 6 hours |
-| **CRM Bot** (M11) | People + threads + follow-ups -> "today's actions" | Every 15 min |
-| **Outreach Bot** (M13) | Draft messages + sequences + A/B test (human approval) | Daily |
-| **Notifier Bot** (enhanced M4) | Only high-relevance, newly-seen alerts | Real-time triggers |
-| **Supervisor Dashboard** (M15) | One screen: Top Jobs + Who to message + Follow-ups + Signals | Always-on UI |
+| **Resume Scorer** (M10) | Score every new job against your resume | On new job insert |
+| **Resume Optimizer** (M11) | Generate constrained resume variants for top matches | On demand |
+| **CRM Bot** (M12) | People + threads + follow-ups -> "today's actions" | Every 15 min |
+| **Signal Bot** (M13) | News/press/contracts/WARN -> company hiring score | Every 6 hours |
+| **Outreach Bot** (M14) | Draft messages + sequences + A/B test (human approval) | Daily |
+| **Supervisor Dashboard** (M16) | One screen: Top Jobs + Who to message + Follow-ups + Signals | Always-on UI |
 
 ---
 
 ## Upcoming Milestones
 
-### M10: ML Scoring Layer (Module C Intelligence)
+---
 
-**Goal:** Replace keyword matching with semantic understanding using OpenAI embeddings.
+### M10: Resume Intelligence Engine (Phase 1 — Deterministic + Embeddings)
 
-**What it teaches the system:**
-- Score relevance: resume <-> JD embedding similarity (competency #7)
-- Extract skills & tags from JD via NER (competency #6)
-- Normalize titles: Sr/Senior, DE/Data Engineer (competency #2)
-- Only alert if relevance > threshold AND first_seen < X hours (competency #8)
+**Goal:** Score how well a JD matches your resume. Identify missing skills. Rank your best bullets. No rewriting yet — pure analysis.
+
+**Philosophy:** Deterministic first, LLM only for embeddings.
+
+#### Module 1 — JD Ingestion & Normalization
+
+Upgrade `src/discovery/parser.py` into a full JD normalization service.
+
+**Input:** Raw job description text (from DB)
+
+**Output:** Structured JD object:
+```json
+{
+  "title_norm": "data engineer",
+  "seniority_level": "senior",
+  "location_type": "remote",
+  "must_have_skills": ["python", "spark", "airflow"],
+  "nice_to_have_skills": ["dbt", "kubernetes"],
+  "responsibilities": ["Build data pipelines", "Maintain data warehouse"],
+  "cleaned_text": "..."
+}
+```
+
+**Tasks:**
+- Remove EEO/legal/benefits boilerplate (regex patterns)
+- Normalize titles (`Data Engineer II` -> `data_engineer`, `Sr.` -> `senior`)
+- Extract skills using dictionary lookup + regex patterns (no LLM)
+- Classify must-have vs nice-to-have using rule heuristics:
+  - "required", "must", "mandatory" -> must-have
+  - "preferred", "nice to have", "bonus" -> nice-to-have
 
 **New files:**
 ```
-src/ml/embeddings.py          — OpenAI embedding client (text-embedding-3-small)
-src/ml/scorer.py              — Cosine similarity scorer (resume vs JD)
-src/ml/skill_extractor.py     — NER-based skill extraction from descriptions
-src/ml/title_normalizer.py    — Title normalization (Senior -> senior, DE -> data_engineer)
+src/ml/jd_normalizer.py       — JD cleaning, boilerplate removal, structured extraction
+src/ml/skill_taxonomy.py      — Master skill dictionary (500+ skills with aliases)
+src/ml/title_normalizer.py    — Title normalization rules
 ```
 
-**Changes:**
-- `database.py`: add `embedding_vector BLOB` column, `relevance_score REAL`
-- `discovery_bot/run.py`: embed each new job, compute cosine sim vs resume
-- `parser.py`: upgrade with ML skill extraction
-- Dashboard: show relevance score, skill tags
+#### Module 2 — Resume Structuring Engine
 
-**New dependencies:** `numpy`, `tiktoken` (already have `openai`)
+Parse your resume into structured units that the scoring engine can work with.
 
-**Tests:** ~15 new (embedding mock, scorer, skill extraction, title normalization)
+**Output:**
+```json
+{
+  "summary_lines": ["5+ years backend engineer..."],
+  "skills_tokens": ["python", "aws", "postgresql", "spark"],
+  "experience": [
+    {
+      "company": "Stripe",
+      "role": "Senior Backend Engineer",
+      "bullets": [
+        {
+          "bullet_id": "stripe_1",
+          "text": "Reduced API latency by 40% serving 10M+ requests/day",
+          "word_count": 9,
+          "tools": ["api", "redis"],
+          "metrics": ["40%", "10M+"],
+          "embedding": [0.012, -0.034, ...]
+        }
+      ]
+    }
+  ],
+  "skill_inventory_master_list": ["python", "java", "aws", "postgresql", "redis", ...]
+}
+```
+
+**Critical rule:** `skill_inventory_master_list` is the ONLY allowed skill injection pool. If a skill isn't in this list, it cannot be added to any rewrite.
+
+**New files:**
+```
+src/ml/resume_parser.py        — Parse resume text into structured units
+src/ml/bullet_analyzer.py      — Extract tools, metrics, word count from each bullet
+```
+
+#### Module 3 — Embedding & Similarity Engine
+
+Use OpenAI embeddings (`text-embedding-3-small`) for semantic matching.
+
+**Compute:**
+- JD embedding (full cleaned text)
+- Resume summary embedding
+- Each bullet embedding
+- `cosine_similarity(bullet, JD)` for every bullet
+- `cosine_similarity(summary, JD)` for overall match
+
+**Weighted Score Formula:**
+```python
+match_score = (
+    0.40 * must_have_coverage +      # % of must-have skills you have
+    0.20 * title_alignment +          # cosine sim of title vs your roles
+    0.20 * bullet_similarity_avg +    # avg cosine sim of top 6 bullets vs JD
+    0.10 * domain_alignment +         # same industry/domain match
+    0.10 * tools_overlap              # % of JD tools in your skill inventory
+)
+```
+
+**Output per job:**
+```json
+{
+  "match_score": 0.87,
+  "missing_must_haves": ["spark", "airflow"],
+  "top_6_relevant_bullets": ["stripe_1", "stripe_3", "meta_2", ...],
+  "skill_overlap": {"matched": 8, "total": 10, "missing": ["spark", "airflow"]},
+  "recommended_resume_variant": "emphasis_data_pipeline"
+}
+```
+
+**New files:**
+```
+src/ml/embeddings.py           — OpenAI embedding client (batch + cache)
+src/ml/scorer.py               — Weighted scoring formula
+src/ml/cache.py                — Embedding cache (SQLite blob storage, avoid re-embedding)
+```
+
+**New DB tables:**
+```sql
+job_descriptions (
+    jd_id TEXT PRIMARY KEY,        -- same as discovered_jobs.id
+    raw_text TEXT,
+    cleaned_text TEXT,
+    structured_json TEXT,          -- JSON blob: must_have_skills, nice_to_have, etc.
+    embedding_vector BLOB          -- cached embedding
+)
+
+resume_bullets (
+    bullet_id TEXT PRIMARY KEY,
+    resume_version TEXT,
+    company TEXT,
+    role TEXT,
+    text TEXT,
+    word_count INTEGER,
+    tools_array TEXT,              -- comma-separated
+    metrics_array TEXT,            -- comma-separated
+    embedding_vector BLOB
+)
+```
+
+**Changes to existing code:**
+- `database.py`: add `relevance_score REAL`, `missing_skills TEXT` columns to `discovered_jobs`
+- `discovery_bot/run.py`: after insert, auto-score against resume embedding
+- Dashboard: show relevance score, missing skills, bullet recommendations
+
+**New dependencies:** `numpy`, `tiktoken`
+
+**Tests:** ~25 new (JD normalization, resume parsing, bullet analysis, scoring formula, embedding mock, skill taxonomy)
 
 ---
 
-### M11: CRM + Contact Database (Module A)
+### M11: Resume Optimizer (Phase 2 — Controlled Rewrite + Validation)
+
+**Goal:** Generate tailored resume variants under strict constraints. Bot proposes, validation engine checks, you approve.
+
+**Philosophy:** LLM is used ONLY for rewriting bullets. Everything else is deterministic. Every rewrite is validated before you see it.
+
+#### Module 4 — Controlled Rewrite Engine
+
+**Input:** JD structured object + selected top bullets + allowed keyword swap map + skill inventory
+
+**LLM prompt enforces:**
+- Do NOT introduce new tools not in `skill_inventory_master_list`
+- Do NOT change metrics (numbers, percentages, outcomes)
+- Maintain original word count ±3
+- Keep same quantified outcomes
+- Only use skills present in skill inventory
+- Return structured output with reasoning
+
+**LLM output:**
+```json
+{
+  "rewritten_bullets": [
+    {
+      "bullet_id": "stripe_1",
+      "original": "Reduced API latency by 40% serving 10M+ requests/day",
+      "rewritten": "Optimized data pipeline latency by 40% processing 10M+ records/day",
+      "keyword_swaps": [{"from": "API", "to": "data pipeline"}],
+      "word_count_delta": 1
+    }
+  ],
+  "reasoning": "Aligned language with JD emphasis on data pipeline work"
+}
+```
+
+**New files:**
+```
+src/ml/rewriter.py             — Constrained LLM rewrite with structured prompts
+src/ml/keyword_mapper.py       — Safe keyword swap map (API->pipeline, build->architect, etc.)
+```
+
+#### Module 5 — Validation Engine (Zero Tolerance)
+
+After every rewrite, run automatic validation:
+
+| Check | Rule | Fail Action |
+|-------|------|-------------|
+| Word count | `abs(new - old) <= 3` | Reject bullet |
+| New skills | `new_skills ⊆ skill_inventory` | Reject bullet |
+| Metrics preserved | Same numbers/percentages | Reject bullet |
+| Embedding similarity | `cosine_sim(old, new) >= 0.90` | Reject bullet |
+| Named entities | Company names, tool names preserved | Reject bullet |
+
+**If validation fails:** Reject rewrite, fall back to recommendation-only mode (show which bullets to emphasize + missing skills, no rewriting).
+
+**New files:**
+```
+src/ml/validator.py            — Post-rewrite validation engine
+src/ml/diff_report.py          — Generate visual diff (original vs rewritten)
+```
+
+**Dashboard additions:**
+- Resume variant viewer with side-by-side diff
+- Approve/reject per-bullet
+- "Recommendation only" mode (no rewriting, just advice)
+- Variant history
+
+**New DB table:**
+```sql
+resume_variants (
+    variant_id TEXT PRIMARY KEY,
+    jd_id TEXT,
+    resume_version TEXT,
+    match_score REAL,
+    rewrite_status TEXT,           -- "approved", "rejected", "pending"
+    bullets_json TEXT,             -- rewritten bullets with diff
+    validation_report TEXT,        -- JSON: which checks passed/failed
+    created_at TEXT
+)
+```
+
+**Tests:** ~20 new (rewrite constraints, validation checks, diff generation, rejection flow)
+
+---
+
+### M12: CRM + Contact Database
 
 **Goal:** One place where every person + company + thread is tracked. The "relationship database."
 
 **What it teaches the system:**
-- Merge duplicates: same person, different sources (competency #1 extended)
 - Track touchpoints and next steps
-- Enforce cooldowns: no more than 1 follow-up/week (competency #10)
-- Recommend next best action daily (competency #11)
+- Enforce cooldowns: no more than 1 follow-up/week
+- Merge duplicates (same person, different sources)
+- Recommend next best action daily
 
 **New entities:**
 ```sql
--- People you've interacted with
 contacts (
     contact_id TEXT PRIMARY KEY,
     name TEXT,
     email TEXT UNIQUE,
-    company TEXT,           -- normalized
-    role TEXT,              -- "recruiter", "hiring_manager", "engineer"
-    source TEXT,            -- "gmail", "linkedin", "manual"
+    company TEXT,
+    role TEXT,                   -- "recruiter", "hiring_manager", "engineer"
+    source TEXT,                 -- "gmail", "linkedin", "manual"
     last_contacted_at TEXT,
     next_action_date TEXT,
-    status TEXT,            -- "active", "cold", "blocked"
-    tags TEXT,              -- comma-separated
+    status TEXT,                 -- "active", "cold", "blocked"
+    tags TEXT,
     notes TEXT
 )
 
--- Conversation threads linked to contacts
 conversations (
-    thread_id TEXT PRIMARY KEY,  -- gmail thread ID
+    thread_id TEXT PRIMARY KEY,
     contact_id TEXT,
-    job_id TEXT,                 -- linked discovered job (if any)
+    job_id TEXT,
     stage TEXT,                  -- "initial", "follow_up_1", "follow_up_2", "replied", "dead"
     last_message_at TEXT,
     next_follow_up TEXT,
-    cooldown_until TEXT          -- anti-spam enforcement
+    cooldown_until TEXT
 )
 ```
 
 **New files:**
 ```
-src/crm/database.py           — Contacts + conversations SQLite DB
-src/crm/dedup.py              — Contact merge logic (same email, fuzzy name match)
-src/crm/cooldown.py           — Outreach cooldown rules
-bots/crm_bot/run.py           — CRM Bot: scans Gmail, updates touchpoints, suggests actions
-backend/routers/crm.py        — API endpoints for contacts/conversations
+src/crm/database.py            — Contacts + conversations SQLite DB
+src/crm/dedup.py               — Contact merge logic
+src/crm/cooldown.py            — Outreach cooldown rules
+bots/crm_bot/run.py            — CRM Bot: scans Gmail, updates touchpoints, suggests actions
+backend/routers/crm.py         — API endpoints
 ```
-
-**Changes:**
-- Email Bot: link classified emails to contacts
-- Dashboard: new "CRM" tab with contact list, conversation timeline, next actions
-- Orchestrator: register CRM bot (every 15 min)
 
 **Tests:** ~20 new
 
 ---
 
-### M12: Hiring Signal Engine (Module B)
+### M13: Hiring Signal Engine
 
-**Goal:** Detect hiring before the job appears. Watch public signals to predict which companies will post roles soon.
+**Goal:** Detect hiring before the job appears. Watch public signals.
 
-**What it teaches the system:**
-- Text classification: "hiring signal" vs "noise"
-- Trend scoring per company (signal strength over time)
-- Avoid bad targets (layoff signals)
-
-**Signal sources (all public, no scraping):**
-```
-Company RSS / blog / newsroom           — "expanding team", "opening new office"
-Press releases (PR Newswire RSS)        — funding announcements, acquisitions
-WARN notices (public state databases)   — layoffs to avoid
-USASpending / contract awards           — government contract wins = hiring spikes
-GitHub repo activity (optional)         — active repos = growing eng team
-Career page update frequency            — frequent updates = actively hiring
-```
+**Signal sources (all public):**
+- Company RSS / blog / newsroom — "expanding team", "opening new office"
+- Press releases (PR Newswire RSS) — funding announcements, acquisitions
+- WARN notices (public state databases) — layoffs to avoid
+- USASpending / contract awards — government contract wins = hiring spikes
 
 **New files:**
 ```
-src/signals/sources.py         — Signal source definitions (RSS feeds, APIs)
+src/signals/sources.py         — Signal source definitions
 src/signals/classifier.py      — "hiring signal" vs "noise" text classifier
-src/signals/scorer.py          — Company hiring score (signal strength over time)
-src/signals/database.py        — Signals SQLite DB (signals, company_scores)
-bots/signal_bot/run.py         — Signal Bot: fetches signals, classifies, scores
-backend/routers/signals.py     — API endpoints for signals
+src/signals/scorer.py          — Company hiring score over time
+src/signals/database.py        — Signals SQLite DB
+bots/signal_bot/run.py         — Signal Bot
+backend/routers/signals.py     — API endpoints
 ```
 
 **New tables:**
 ```sql
 hiring_signals (
     signal_id TEXT PRIMARY KEY,
-    company TEXT,               -- normalized
-    signal_type TEXT,           -- "funding", "expansion", "acquisition", "contract", "layoff"
+    company TEXT,
+    signal_type TEXT,            -- "funding", "expansion", "acquisition", "contract", "layoff"
     signal_text TEXT,
     source_url TEXT,
     confidence REAL,
@@ -185,40 +399,32 @@ hiring_signals (
 
 company_scores (
     company TEXT PRIMARY KEY,
-    hiring_score REAL,          -- 0.0 to 1.0
+    hiring_score REAL,
     signal_count INTEGER,
     last_signal_at TEXT,
-    trend TEXT                  -- "up", "down", "stable"
+    trend TEXT                   -- "up", "down", "stable"
 )
 ```
 
-**Output:** "Company X likely hiring data engineers in 30 days" / "Avoid Company Y (layoff signals)"
+**Output:** "Company X likely hiring in 30 days" / "Avoid Company Y (layoff signals)"
 
 **Tests:** ~15 new
 
 ---
 
-### M13: Outreach Copilot (Module D)
+### M14: Outreach Copilot
 
-**Goal:** Increase response rate while staying compliant. Bot drafts, you approve.
-
-**What it teaches the system:**
-- Draft short messages based on job + resume
-- Create 2-touch sequences (initial + follow-up) with cooldown rules
-- Track responses via Gmail threads and update CRM
-- Response likelihood model (competency #12)
+**Goal:** Increase response rate while staying compliant. Bot drafts, you approve. Never auto-sends.
 
 **New files:**
 ```
-src/outreach/drafter.py        — LLM-powered message drafter (templates + GPT)
-src/outreach/sequences.py      — Multi-touch sequence engine (initial, follow-up 1, follow-up 2)
+src/outreach/drafter.py        — LLM-powered message drafter
+src/outreach/sequences.py      — Multi-touch sequence engine
 src/outreach/rules.py          — Anti-spam rules, cooldown enforcement
-src/outreach/ab_test.py        — Simple A/B variant tracking (message length, tone, timing)
+src/outreach/ab_test.py        — A/B variant tracking
 bots/outreach_bot/run.py       — Outreach Bot: generates daily action list
-backend/routers/outreach.py    — API: get suggestions, approve/reject, send
+backend/routers/outreach.py    — API endpoints
 ```
-
-**Key constraint:** Bot drafts, human approves. Never auto-sends.
 
 **Sequence flow:**
 ```
@@ -228,51 +434,40 @@ Day 7:  Check for reply. If no reply -> Draft follow-up 2 (final) -> [You approv
 Day 14: If no reply -> Mark "cold" in CRM. Stop.
 ```
 
-**ML (later):**
-- Response likelihood model: features = role match score, company size, message length, day/time sent, prior touches
-- Multi-armed bandit for message variant optimization
+**ML (later):** Response likelihood model, multi-armed bandit for message optimization
 
 **Tests:** ~15 new
 
 ---
 
-### M14: Referral Discovery (Module E)
+### M15: Referral Discovery
 
 **Goal:** Find the best referral paths using data you already have.
 
-**Inputs (no scraping needed):**
-- Your contacts list (manually entered or from CRM)
-- Email history ("met someone at X company before")
+**Inputs (no scraping):**
+- Your contacts list (from CRM)
+- Email history
 - Alumni lists if publicly accessible
-- Company "people directory" pages if public
-
-**New files:**
-```
-src/referral/graph.py          — Contact graph builder
-src/referral/scorer.py         — Referral closeness scoring
-src/referral/suggester.py      — "Ask A to intro to B" suggestions
-```
 
 **Referral score by closeness:**
 ```
-you already spoke before        → 1.0 (hot lead)
+you already spoke before        → 1.0
 same previous company           → 0.7
 same school                     → 0.5
 same location/industry          → 0.3
 2nd-degree (contact's contact)  → 0.2
 ```
 
-**Output:** "For [Job at Stripe], your best referral path is [Alice (ex-Stripe, you emailed in Jan)]"
+**Output:** "For [Job at Stripe], your best path is [Alice (ex-Stripe, emailed in Jan)]"
 
 **Tests:** ~10 new
 
 ---
 
-### M15: Supervisor Dashboard (Unified Command Center)
+### M16: Supervisor Dashboard (Unified Command Center)
 
-**Goal:** One screen to rule them all. "Today's Top Jobs + Who to message + Follow-ups due + Signals"
+**Goal:** One screen: Today's Top Jobs + Who to message + Follow-ups due + Signals
 
-**Dashboard sections:**
 ```
 +--------------------------------------------------------------+
 |  TODAY'S ACTIONS (priority-ranked)                             |
@@ -291,10 +486,48 @@ same location/industry          → 0.3
 +--------------------------------------------------------------+
 ```
 
-**ML feature: "Learn from outcomes"** (competency #12)
+**ML: Learn from outcomes:**
 - Which outreach got replies? -> train response predictor
 - Which jobs led to interviews? -> improve relevance scorer
-- Which sources produce quality roles? -> adaptive source weighting
+- Which resume variants got callbacks? -> optimize rewrite strategy
+
+**Tests:** ~10 new
+
+---
+
+## Build Order
+
+```
+YOU ARE HERE
+     |
+     v
+M10: Resume Intelligence Engine     <-- foundation: JD normalization + resume parsing
+     |                                   + embeddings + scoring formula
+     v                                   (deterministic first, no rewriting)
+M11: Resume Optimizer                <-- LLM rewrite under constraints
+     |                                   + validation engine (zero tolerance)
+     v                                   + diff reports + approval UI
+M12: CRM + Contacts                  <-- relationship database, cooldowns
+     |
+     v
+M13: Hiring Signals                  <-- predict hiring before jobs appear
+     |
+     v
+M14: Outreach Copilot               <-- draft messages, sequences (needs M12)
+     |
+     v
+M15: Referral Discovery              <-- contact graph, closeness scoring (needs M12)
+     |
+     v
+M16: Supervisor Dashboard            <-- integrates everything, learns from outcomes
+```
+
+**Why this order:**
+- M10 first: scoring engine is used by everything (discovery, outreach, signals)
+- M11 right after: resume optimization needs M10's embeddings + JD normalizer
+- M12 before M14/M15: outreach and referrals both need the contact database
+- M13 independent: can be built anytime
+- M16 last: integration layer that ties everything together
 
 ---
 
@@ -307,65 +540,61 @@ same location/industry          → 0.3
 | 3 | Detect ATS type from URL | M9 | DONE |
 | 4 | Pull jobs via structured endpoints when possible | M9 | DONE |
 | 5 | Dedupe via URL + ID + embedding similarity | M9 (URL+ID), M10 (embedding) | Partial |
-| 6 | Extract skills & tags from JD | M10 | Planned |
-| 7 | Score relevance vs your resume | M10 | Planned |
+| 6 | Extract skills & tags from JD (must-have vs nice-to-have) | M10 | Planned |
+| 7 | Score relevance vs your resume (weighted formula) | M10 | Planned |
 | 8 | Track first_seen vs posted_at vs refreshed | M9 | DONE |
 | 9 | Classify emails into pipeline stages | M3 | DONE |
-| 10 | Enforce outreach cooldown + anti-spam limits | M11, M13 | Planned |
-| 11 | Recommend next best action daily | M13, M15 | Planned |
-| 12 | Learn from outcomes (interview/reply/reject) | M15 | Planned |
+| 10 | Enforce outreach cooldown + anti-spam limits | M12, M14 | Planned |
+| 11 | Recommend next best action daily | M14, M16 | Planned |
+| 12 | Learn from outcomes (interview/reply/reject) | M16 | Planned |
 
 ---
 
-## Recommended Build Order
+## Success Metrics
 
-```
-YOU ARE HERE
-     |
-     v
-M10: ML Scoring Layer          <-- highest ROI, foundation for everything
-     |
-     v
-M11: CRM + Contacts            <-- unlocks outreach + referral modules
-     |
-     v
-M12: Hiring Signals            <-- independent, can run in parallel with M11
-     |
-     v
-M13: Outreach Copilot          <-- needs M11 (CRM) + M10 (scoring)
-     |
-     v
-M14: Referral Discovery         <-- needs M11 (CRM)
-     |
-     v
-M15: Supervisor Dashboard       <-- integrates everything into one view
-```
-
-**Why this order:**
-- M10 first because ML scoring is used by every other module (relevance, signals, outreach)
-- M11 before M13/M14 because outreach and referrals both need the contact database
-- M12 is independent and can be built anytime (even in parallel with M11)
-- M15 last because it's the integration layer that ties everything together
+| Metric | Target | Measured By |
+|--------|--------|-------------|
+| Resume match score accuracy | Manual validation on 50 jobs | M10 |
+| No hallucinated skills | 0 tolerance | M11 validation engine |
+| Rewrite rejection rate | < 20% | M11 validation stats |
+| Bullet semantic similarity | >= 0.9 (old vs rewritten) | M11 validation engine |
+| Reduced manual tailoring time | 60% less | M11 user tracking |
+| Response rate (outreach) | Track improvement over baseline | M14 |
+| Interview conversion (per resume variant) | Track per variant | M16 |
 
 ---
 
-## Tech Stack Additions (Planned)
+## What We Are NOT Building
 
-| Package | Used In | Why |
-|---------|---------|-----|
+- Inventing experience
+- Fabricating skills
+- Rewriting entire resumes blindly
+- Outsmarting ATS with spam keywords
+- Replacing human judgment
+- Scraping private networks (LinkedIn profiles, etc.)
+- Auto-sending messages without approval
+
+---
+
+## Tech Stack (Current + Planned)
+
+| Package | Milestone | Why |
+|---------|-----------|-----|
+| `feedparser` | M9 (done) | RSS/Atom feed parsing |
+| `beautifulsoup4` | M9 (done) | HTML cleanup |
 | `numpy` | M10 | Cosine similarity computation |
 | `tiktoken` | M10 | Token counting for embeddings |
-| `scikit-learn` | M12, M15 | Text classification, logistic regression |
-| `sentence-transformers` (optional) | M10 | Local embeddings if you want to avoid API costs |
+| `python-docx` | M11 | DOCX resume export |
+| `scikit-learn` | M13, M16 | Text classification, logistic regression |
 
 ---
 
 ## Current System Stats
 
 - **Sources:** 297 (184 Greenhouse + 66 Lever + 30 Ashby + 14 APIs + 3 RSS)
-- **Database tables:** discovered_jobs (30+ columns), discovery_sources, companies, jobs_fts (FTS5)
+- **Database tables:** discovered_jobs (30+ cols), discovery_sources, companies, jobs_fts (FTS5)
 - **Dedup:** 3-pass (URL + ATS job_id + fingerprint)
 - **Scheduling:** Adaptive (60-360 min based on source productivity)
-- **Caching:** ETag + If-Modified-Since for HTTP, content hash for change detection
+- **Caching:** ETag + If-Modified-Since, content hash for change detection
 - **Tests:** 159 passing
-- **Commits:** 9 on main
+- **Commits:** 10 on main
