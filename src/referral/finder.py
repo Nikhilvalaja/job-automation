@@ -1,11 +1,10 @@
 """Referral path finder.
 
 For a given job (company + title), finds the best referral contacts
-from the CRM database and returns them ranked by closeness score.
+from the CRM database and returns them ranked by final_score.
 
-Usage:
-    paths = find_referral_paths("Stripe", job_title="Backend Engineer", top_n=5)
-    # Returns list of ReferralScore, sorted best-first
+final_score = closeness * role_alignment * signal_multiplier * hiring_window_multiplier
+Fatigue-blocked contacts are excluded.
 """
 
 from __future__ import annotations
@@ -23,19 +22,13 @@ def find_referral_paths(
     job_title: str = "",
     top_n: int = 5,
     min_score: float = 0.20,
+    use_signals: bool = True,
     crm_db_path: Path | None = None,
 ) -> list[ReferralScore]:
     """Find best referral contacts for target_company from CRM.
 
-    Args:
-        target_company: Company you're applying to
-        job_title: Optional role for context
-        top_n: Max results to return
-        min_score: Minimum closeness score to include
-        crm_db_path: CRM DB path (default: production)
-
-    Returns:
-        List of ReferralScore sorted by score descending
+    Excludes fatigue-blocked contacts.
+    Ranks by final_score (closeness × role_alignment × signal × hiring_window).
     """
     from src.crm.database import list_contacts, get_touchpoints
 
@@ -46,11 +39,9 @@ def find_referral_paths(
 
     results: list[ReferralScore] = []
     for contact in contacts:
-        # Skip blocked/archived contacts
         if contact.get("status") in ("blocked", "archived"):
             continue
 
-        # Get touchpoints for recency scoring
         try:
             tps = get_touchpoints(contact_id=contact["id"], db_path=crm_db_path)
         except Exception:
@@ -59,19 +50,27 @@ def find_referral_paths(
         rs = score_contact_for_company(
             contact=contact,
             target_company=target_company,
+            target_job_title=job_title,
             touchpoints=tps,
+            use_signals=use_signals,
         )
 
-        if rs.score >= min_score:
+        # Exclude fatigue-blocked or below threshold
+        if rs.fatigue_blocked:
+            logger.debug(f"  Fatigue-blocked: {rs.contact_email} — {rs.fatigue_reason}")
+            continue
+
+        if rs.final_score >= min_score:
             results.append(rs)
 
-    results.sort(key=lambda x: x.score, reverse=True)
+    results.sort(key=lambda x: x.final_score, reverse=True)
     return results[:top_n]
 
 
 def get_referral_summary(
     target_company: str,
     job_title: str = "",
+    use_signals: bool = True,
     crm_db_path: Path | None = None,
 ) -> dict:
     """Get a human-readable referral summary for a company."""
@@ -79,6 +78,7 @@ def get_referral_summary(
         target_company=target_company,
         job_title=job_title,
         top_n=10,
+        use_signals=use_signals,
         crm_db_path=crm_db_path,
     )
 
@@ -95,7 +95,7 @@ def get_referral_summary(
     best = paths[0]
     summary_line = (
         f"Best path to {target_company}: {best.contact_name} "
-        f"({', '.join(best.reasons)}) — score {best.score:.0%}"
+        f"({', '.join(best.reasons[:3])}) — score {best.final_score:.0%}"
     )
 
     return {
@@ -104,34 +104,47 @@ def get_referral_summary(
         "best_path": {
             "name": best.contact_name,
             "email": best.contact_email,
-            "score": best.score,
+            "score": best.final_score,
+            "closeness_score": best.closeness_score,
+            "role_alignment_score": best.role_alignment_score,
+            "signal_multiplier": best.signal_multiplier,
+            "hiring_window": best.hiring_window,
             "tier": best.tier,
             "reasons": best.reasons,
             "suggested_ask": best.suggested_ask,
         },
         "total_paths": len(paths),
-        "paths": [
-            {
-                "contact_id": p.contact_id,
-                "name": p.contact_name,
-                "email": p.contact_email,
-                "company": p.company,
-                "score": p.score,
-                "tier": p.tier,
-                "reasons": p.reasons,
-                "last_contacted": p.last_contacted,
-                "touchpoint_count": p.touchpoint_count,
-                "suggested_ask": p.suggested_ask,
-            }
-            for p in paths
-        ],
+        "paths": [_path_dict(p) for p in paths],
         "summary": summary_line,
+    }
+
+
+def _path_dict(p: ReferralScore) -> dict:
+    return {
+        "contact_id": p.contact_id,
+        "name": p.contact_name,
+        "email": p.contact_email,
+        "company": p.company,
+        "contact_role": p.contact_role,
+        "score": p.final_score,
+        "closeness_score": p.closeness_score,
+        "role_alignment_score": p.role_alignment_score,
+        "signal_multiplier": p.signal_multiplier,
+        "hiring_window_multiplier": p.hiring_window_multiplier,
+        "tier": p.tier,
+        "reasons": p.reasons,
+        "last_contacted": p.last_contacted,
+        "touchpoint_count": p.touchpoint_count,
+        "hiring_window": p.hiring_window,
+        "signal_context": p.signal_context,
+        "suggested_ask": p.suggested_ask,
     }
 
 
 def enrich_jobs_with_referrals(
     jobs: list[dict],
     top_n: int = 3,
+    use_signals: bool = True,
     crm_db_path: Path | None = None,
 ) -> list[dict]:
     """Add referral data to a list of job dicts (each must have 'company' key)."""
@@ -146,26 +159,18 @@ def enrich_jobs_with_referrals(
             target_company=company,
             job_title=job.get("role", ""),
             top_n=top_n,
+            use_signals=use_signals,
             crm_db_path=crm_db_path,
         )
 
         best = paths[0] if paths else None
         enriched.append({
             **job,
-            "referral_paths": [
-                {
-                    "name": p.contact_name,
-                    "email": p.contact_email,
-                    "score": p.score,
-                    "tier": p.tier,
-                    "reasons": p.reasons,
-                }
-                for p in paths
-            ],
+            "referral_paths": [_path_dict(p) for p in paths],
             "best_referral": {
                 "name": best.contact_name,
                 "email": best.contact_email,
-                "score": best.score,
+                "score": best.final_score,
                 "tier": best.tier,
                 "suggested_ask": best.suggested_ask,
             } if best else None,
