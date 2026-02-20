@@ -226,3 +226,41 @@ Print this at the end for a complete development history.
 - **8 KPI cards** (total, applied, replied, interviews, offers, rejected, response rate, sources count)
 
 ---
+
+## 2026-02-19 — Milestone 8: Cover Letter Generator
+
+### What Was Built
+- **LLM Client** (`src/llm/client.py`): OpenAI API wrapper
+  - Lazy-initialized OpenAI client with `is_configured()` check
+  - `chat()` method with system/user prompts, temperature, max_tokens
+  - Retry with exponential backoff on APIError/RateLimitError (3 attempts)
+- **Prompt Templates** (`src/llm/prompts.py`):
+  - `COVER_LETTER_SYSTEM`: Expert career coach system prompt (tone, structure, format rules)
+  - `COVER_LETTER_USER`: Template with company/role/JD/resume placeholders
+  - `COVER_LETTER_TEMPLATE`: Simple fallback template (no API key needed)
+- **Cover Letter Generator** (`src/llm/generator.py`):
+  - `generate()` dispatches to LLM or template mode
+  - Falls back to template if OpenAI not configured (even if LLM mode requested)
+  - Truncates JD to 4000 chars and resume to 3000 chars to prevent token overuse
+- **API Endpoint** (`backend/routers/cover_letter.py`):
+  - `POST /cover-letter` with CoverLetterRequest/CoverLetterResponse models
+  - Validates: company+role required, JD required for LLM mode
+  - Lazy singleton generator instance
+- **Dashboard Cover Letter tab** — select a tracked job or enter custom details, choose LLM/template mode, generate and copy
+- **Startup scripts** — `start.bat` and `start-silent.vbs` for one-click launch and silent auto-start on Windows login
+- **9 cover letter tests** (`tests/test_llm/test_cover_letter.py`):
+  - Template mode: generates, personalizes, falls back when no API key
+  - LLM mode (mocked): OpenAI call, resume inclusion, JD truncation
+  - API endpoint: template works, missing company → 400, missing JD in LLM mode → 400
+
+### Design Decisions
+- Two modes: LLM (GPT-powered, needs OPENAI_API_KEY) and template (zero-cost fallback)
+- Template mode always works — no external dependencies needed
+- JD/resume truncation prevents excessive token usage and cost
+- Generator is a lazy singleton — only one OpenAI client per process
+- Safety: LLM client never logs prompts or responses (may contain personal info)
+
+### Test Results
+- **70/70 tests passing**: 14 backend + 24 email rules + 12 orchestrator + 11 reminder + 9 cover letter
+
+---

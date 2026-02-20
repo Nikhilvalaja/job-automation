@@ -51,9 +51,7 @@
         "*://*.wellfound.com/*",
         "*://*.builtin.com/*",
         "*://*.simplyhired.com/*",
-        "*://*.careerbuilder.com/*",
-        "*://*.careers.*/*",
-        "*://*.jobs.*/*"
+        "*://*.careerbuilder.com/*"
       ],
       "js": ["extractors.js", "content.js"],
       "css": ["content-styles.css"],

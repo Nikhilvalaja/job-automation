@@ -27,7 +27,7 @@ from src.config import get_settings
 
 # --- Page Config ---
 st.set_page_config(
-    page_title="Job Tracker Dashboard",
+    page_title="JobPilot Dashboard",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -106,7 +106,7 @@ def render_sidebar():
     """Render sidebar with settings and add job form."""
     settings = get_settings()
 
-    st.sidebar.title("Job Tracker")
+    st.sidebar.title("JobPilot")
 
     # Backend connection
     backend_url = st.sidebar.text_input("Backend URL", value=settings.backend_url)
@@ -127,7 +127,7 @@ def render_sidebar():
         source = st.text_input("Source", placeholder="LinkedIn, Indeed, etc.")
         job_url = st.text_input("Job URL")
         status = st.selectbox("Status", STATUSES, index=1)
-        notes = st.text_area("Notes", height=60)
+        notes = st.text_area("Notes", height=68)
         submitted = st.form_submit_button("Add Job")
 
         if submitted:
@@ -555,13 +555,98 @@ def render_sites(df: pd.DataFrame):
     )
 
 
+# --- Cover Letter Generator ---
+def render_cover_letter(df: pd.DataFrame, backend_url: str):
+    """Render cover letter generator UI."""
+    st.subheader("Cover Letter Generator")
+    st.caption("Generate a tailored cover letter using AI (OpenAI GPT) or a basic template.")
+
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        # Select from tracked jobs or enter manually
+        job_options = ["-- Enter manually --"] + [
+            f"{row['company']} — {row['role']}" for _, row in df.iterrows()
+            if row.get("company")
+        ]
+        selected_job = st.selectbox("Select a tracked job", options=job_options)
+
+        if selected_job != "-- Enter manually --":
+            # Parse company and role
+            parts = selected_job.split(" — ", 1)
+            company = parts[0] if len(parts) > 0 else ""
+            role = parts[1] if len(parts) > 1 else ""
+        else:
+            company = ""
+            role = ""
+
+        company = st.text_input("Company", value=company)
+        role = st.text_input("Role", value=role)
+        job_description = st.text_area(
+            "Job Description (paste the full JD)",
+            height=200,
+            placeholder="Paste the job description here for a personalized cover letter...",
+        )
+        resume_text = st.text_area(
+            "Your Resume/Background (optional)",
+            height=150,
+            placeholder="Paste your resume or key achievements to personalize further...",
+        )
+        mode = st.radio("Generation Mode", ["llm", "template"], horizontal=True)
+        generate_btn = st.button("Generate Cover Letter", type="primary")
+
+    with col2:
+        st.markdown("**Generated Cover Letter:**")
+        if generate_btn:
+            if not company or not role:
+                st.error("Company and Role are required.")
+            elif mode == "llm" and not job_description:
+                st.error("Job description is required for AI mode.")
+            else:
+                with st.spinner("Generating..."):
+                    try:
+                        resp = httpx.post(
+                            f"{backend_url}/cover-letter",
+                            json={
+                                "company": company,
+                                "role": role,
+                                "job_description": job_description,
+                                "resume_text": resume_text,
+                                "mode": mode,
+                            },
+                            timeout=30.0,
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            st.text_area(
+                                "Cover Letter",
+                                value=data["cover_letter"],
+                                height=400,
+                                label_visibility="collapsed",
+                            )
+                            st.caption(
+                                f"Mode: {data['mode']} | "
+                                f"Tokens: {data.get('tokens_used', 0)}"
+                            )
+                            # Copy button
+                            st.code(data["cover_letter"], language=None)
+                        else:
+                            st.error(f"Error: {resp.status_code} — {resp.text}")
+                    except httpx.ConnectError:
+                        st.error("Backend not reachable.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+        else:
+            st.info("Fill in the details and click 'Generate Cover Letter' to get started.")
+
+
 # --- Main ---
 def main():
     backend_url = render_sidebar()
     jobs = fetch_jobs(backend_url)
 
     if not jobs:
-        st.title("Job Tracker Dashboard")
+        st.title("JobPilot Dashboard")
         st.info("No jobs tracked yet. Add your first job from the sidebar, Chrome extension, or CLI.")
         render_bot_controls()
         return
@@ -572,11 +657,11 @@ def main():
         if col not in df.columns:
             df[col] = ""
 
-    st.title("Job Tracker Dashboard")
+    st.title("JobPilot Dashboard")
 
     # Main tabs
-    tab_overview, tab_table, tab_bots, tab_rules, tab_sites = st.tabs(
-        ["Overview", "Applications", "Bot Controls", "Email Rules", "Sites & Sources"]
+    tab_overview, tab_table, tab_cover, tab_bots, tab_rules, tab_sites = st.tabs(
+        ["Overview", "Applications", "Cover Letter", "Bot Controls", "Email Rules", "Sites & Sources"]
     )
 
     with tab_overview:
@@ -586,6 +671,9 @@ def main():
 
     with tab_table:
         render_table(df, backend_url)
+
+    with tab_cover:
+        render_cover_letter(df, backend_url)
 
     with tab_bots:
         render_bot_controls()
