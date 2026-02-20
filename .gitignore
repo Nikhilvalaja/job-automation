@@ -50,3 +50,4 @@ extension/node_modules/
 # Misc
 *.bak
 *.tmp
+data/

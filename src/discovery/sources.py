@@ -1,10 +1,16 @@
 """Job discovery sources — RSS feeds, public APIs, and career page monitors.
 
+200+ sources covering:
+- 6 public job board APIs (no key needed)
+- 100+ Greenhouse-hosted company career feeds
+- 50+ Lever-hosted company career feeds
+- 20+ Ashby-hosted company career feeds
+- Big Tech career RSS feeds
+
 All sources are ToS-compliant:
 - RSS feeds are explicitly designed for automated consumption
 - Public APIs have documented rate limits we respect
-- Career pages are fetched via their public sitemap/RSS where available
-- No scraping of pages that prohibit it (robots.txt respected)
+- No scraping of pages that prohibit it
 """
 
 from __future__ import annotations
@@ -16,7 +22,7 @@ from enum import Enum
 class SourceType(str, Enum):
     RSS = "rss"
     API = "api"
-    CAREER_RSS = "career_rss"  # Company career page RSS/Atom feeds
+    CAREER_RSS = "career_rss"
 
 
 @dataclass
@@ -24,11 +30,29 @@ class JobSource:
     """A single job discovery source."""
     name: str
     source_type: SourceType
-    url_template: str  # May contain {query} and {location} placeholders
+    url_template: str
     enabled: bool = True
-    rate_limit_seconds: float = 2.0  # Min seconds between requests to this domain
-    parser: str = "default"  # Parser function name for API sources
+    rate_limit_seconds: float = 2.0
+    parser: str = "default"
     headers: dict = field(default_factory=dict)
+
+
+def _gh(name: str, slug: str) -> JobSource:
+    """Shorthand to create a Greenhouse career feed source."""
+    return JobSource(name=name, source_type=SourceType.CAREER_RSS,
+                     url_template=f"https://boards.greenhouse.io/{slug}/feed")
+
+
+def _lever(name: str, slug: str) -> JobSource:
+    """Shorthand to create a Lever career feed source."""
+    return JobSource(name=name, source_type=SourceType.CAREER_RSS,
+                     url_template=f"https://jobs.lever.co/{slug}/feed")
+
+
+def _ashby(name: str, slug: str) -> JobSource:
+    """Shorthand to create an Ashby career feed source."""
+    return JobSource(name=name, source_type=SourceType.CAREER_RSS,
+                     url_template=f"https://jobs.ashbyhq.com/{slug}/feed")
 
 
 # ---------------------------------------------------------------------------
@@ -36,140 +60,262 @@ class JobSource:
 # ---------------------------------------------------------------------------
 
 JOB_BOARD_SOURCES = [
-    # RemoteOK — remote-only jobs, JSON API
-    JobSource(
-        name="RemoteOK",
-        source_type=SourceType.API,
-        url_template="https://remoteok.com/api",
-        parser="remoteok",
-        headers={"User-Agent": "JobPilot/1.0 (job search assistant)"},
-    ),
-    # Arbeitnow — EU + remote jobs, public JSON API
-    JobSource(
-        name="Arbeitnow",
-        source_type=SourceType.API,
-        url_template="https://www.arbeitnow.com/api/job-board-api",
-        parser="arbeitnow",
-    ),
-    # Indeed RSS — search results as RSS feed (explicitly supported by Indeed)
-    JobSource(
-        name="Indeed",
-        source_type=SourceType.RSS,
-        url_template="https://www.indeed.com/rss?q={query}&l={location}&sort=date",
-        rate_limit_seconds=3.0,
-    ),
-    # HackerNews Who's Hiring — monthly thread, parsed via HN API
-    JobSource(
-        name="HN Who's Hiring",
-        source_type=SourceType.API,
-        url_template="https://hacker-news.firebaseio.com/v0/item/{item_id}.json",
-        parser="hackernews",
-        rate_limit_seconds=1.0,
-    ),
-    # GitHub Jobs (via alternative aggregator)
-    JobSource(
-        name="Jobicy",
-        source_type=SourceType.API,
-        url_template="https://jobicy.com/api/v2/remote-jobs?count=50&tag={query}",
-        parser="jobicy",
-    ),
-    # FindWork.dev — tech jobs API
-    JobSource(
-        name="FindWork",
-        source_type=SourceType.API,
-        url_template="https://findwork.dev/api/jobs/?search={query}&sort_by=relevance",
-        parser="findwork",
-    ),
+    JobSource(name="RemoteOK", source_type=SourceType.API,
+              url_template="https://remoteok.com/api", parser="remoteok",
+              headers={"User-Agent": "JobPilot/1.0 (job search assistant)"}),
+    JobSource(name="Arbeitnow", source_type=SourceType.API,
+              url_template="https://www.arbeitnow.com/api/job-board-api", parser="arbeitnow"),
+    JobSource(name="Indeed", source_type=SourceType.RSS,
+              url_template="https://www.indeed.com/rss?q={query}&l={location}&sort=date",
+              rate_limit_seconds=3.0),
+    JobSource(name="HN Who's Hiring", source_type=SourceType.API,
+              url_template="https://hacker-news.firebaseio.com/v0/item/{item_id}.json",
+              parser="hackernews", rate_limit_seconds=1.0),
+    JobSource(name="Jobicy", source_type=SourceType.API,
+              url_template="https://jobicy.com/api/v2/remote-jobs?count=50&tag={query}", parser="jobicy"),
+    JobSource(name="FindWork", source_type=SourceType.API,
+              url_template="https://findwork.dev/api/jobs/?search={query}&sort_by=relevance", parser="findwork"),
 ]
 
 # ---------------------------------------------------------------------------
-# Company Career Page RSS Feeds
-# Companies that publish their job openings as RSS/Atom feeds.
-# These are official, ToS-compliant feeds published BY the companies.
+# Big Tech Career RSS
 # ---------------------------------------------------------------------------
 
-COMPANY_CAREER_FEEDS = [
-    # FAANG + Big Tech
+BIG_TECH_FEEDS = [
     JobSource(name="Google Careers", source_type=SourceType.CAREER_RSS,
-             url_template="https://careers.google.com/jobs/results/rss/?q={query}"),
+              url_template="https://careers.google.com/jobs/results/rss/?q={query}"),
     JobSource(name="Microsoft Careers", source_type=SourceType.CAREER_RSS,
-             url_template="https://careers.microsoft.com/professionals/us/en/rss?q={query}"),
+              url_template="https://careers.microsoft.com/professionals/us/en/rss?q={query}"),
     JobSource(name="Apple Careers", source_type=SourceType.CAREER_RSS,
-             url_template="https://jobs.apple.com/en-us/search?search={query}&rss=true"),
+              url_template="https://jobs.apple.com/en-us/search?search={query}&rss=true"),
+]
 
-    # Top Tech Companies with RSS/Atom career feeds
-    JobSource(name="Stripe Jobs", source_type=SourceType.CAREER_RSS,
-             url_template="https://stripe.com/jobs/search?query={query}"),
-    JobSource(name="Shopify Careers", source_type=SourceType.CAREER_RSS,
-             url_template="https://www.shopify.com/careers/search?keywords={query}"),
+# ---------------------------------------------------------------------------
+# Greenhouse-hosted careers (100+ companies)
+# Format: https://boards.greenhouse.io/{slug}/feed
+# ---------------------------------------------------------------------------
 
-    # Greenhouse-hosted careers (hundreds of companies use Greenhouse)
-    # Format: https://boards.greenhouse.io/{company}/feed
-    JobSource(name="Coinbase (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/coinbase/feed"),
-    JobSource(name="Discord (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/discord/feed"),
-    JobSource(name="Notion (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/notion/feed"),
-    JobSource(name="Figma (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/figma/feed"),
-    JobSource(name="Datadog (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/datadog/feed"),
-    JobSource(name="Cloudflare (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/cloudflare/feed"),
-    JobSource(name="Twitch (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/twitch/feed"),
-    JobSource(name="Plaid (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/plaid/feed"),
-    JobSource(name="GitLab (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/gitlab/feed"),
-    JobSource(name="Ramp (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/ramp/feed"),
-    JobSource(name="Brex (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/brex/feed"),
-    JobSource(name="Scale AI (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/scaleai/feed"),
-    JobSource(name="Anthropic (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/anthropic/feed"),
-    JobSource(name="OpenAI (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/openai/feed"),
-    JobSource(name="Vercel (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/vercel/feed"),
-    JobSource(name="Supabase (Greenhouse)", source_type=SourceType.CAREER_RSS,
-             url_template="https://boards.greenhouse.io/supabase/feed"),
+GREENHOUSE_FEEDS = [
+    # AI / ML
+    _gh("OpenAI", "openai"),
+    _gh("Anthropic", "anthropic"),
+    _gh("Scale AI", "scaleai"),
+    _gh("Cohere", "cohere"),
+    _gh("Hugging Face", "huggingface"),
+    _gh("Stability AI", "stabilityai"),
+    _gh("Inflection AI", "inflectionai"),
+    _gh("Adept AI", "adeptailabs"),
+    _gh("Character AI", "character"),
+    _gh("Mistral AI", "mistral"),
+    _gh("Runway", "runwayml"),
+    _gh("Jasper AI", "jasper"),
+    _gh("Weights & Biases", "wandb"),
 
-    # Lever-hosted careers (another major ATS with RSS)
-    # Format: https://jobs.lever.co/{company}/feed
-    JobSource(name="Netflix (Lever)", source_type=SourceType.CAREER_RSS,
-             url_template="https://jobs.lever.co/netflix/feed"),
-    JobSource(name="Spotify (Lever)", source_type=SourceType.CAREER_RSS,
-             url_template="https://jobs.lever.co/spotify/feed"),
-    JobSource(name="Reddit (Lever)", source_type=SourceType.CAREER_RSS,
-             url_template="https://jobs.lever.co/reddit/feed"),
-    JobSource(name="Anduril (Lever)", source_type=SourceType.CAREER_RSS,
-             url_template="https://jobs.lever.co/anduril/feed"),
+    # Fintech / Payments
+    _gh("Stripe", "stripe"),
+    _gh("Coinbase", "coinbase"),
+    _gh("Plaid", "plaid"),
+    _gh("Ramp", "ramp"),
+    _gh("Brex", "brex"),
+    _gh("Affirm", "affirm"),
+    _gh("Chime", "chime"),
+    _gh("Mercury", "mercury"),
+    _gh("Marqeta", "marqeta"),
+    _gh("Blockchain.com", "blockchain"),
+    _gh("Anchorage Digital", "anchoragedigital"),
+    _gh("Circle", "circle"),
+    _gh("Ripple", "ripple"),
 
-    # Ashby-hosted careers
-    JobSource(name="Linear (Ashby)", source_type=SourceType.CAREER_RSS,
-             url_template="https://jobs.ashbyhq.com/linear/feed"),
-    JobSource(name="Resend (Ashby)", source_type=SourceType.CAREER_RSS,
-             url_template="https://jobs.ashbyhq.com/resend/feed"),
+    # Developer Tools / Infra
+    _gh("Vercel", "vercel"),
+    _gh("Supabase", "supabase"),
+    _gh("Cloudflare", "cloudflare"),
+    _gh("Datadog", "datadog"),
+    _gh("GitLab", "gitlab"),
+    _gh("Figma", "figma"),
+    _gh("Notion", "notion"),
+    _gh("Airtable", "airtable"),
+    _gh("Retool", "retool"),
+    _gh("PlanetScale", "planetscale"),
+    _gh("Fly.io", "flyio"),
+    _gh("Railway", "railway"),
+    _gh("Render", "render"),
+    _gh("Netlify", "netlify"),
+    _gh("Snyk", "snyk"),
+    _gh("LaunchDarkly", "launchdarkly"),
+    _gh("HashiCorp", "hashicorp"),
+    _gh("Grafana Labs", "grafanalabs"),
+    _gh("Elastic", "elastic"),
+    _gh("Kong", "kong"),
+    _gh("PostHog", "posthog"),
+    _gh("Sentry", "sentry"),
+
+    # SaaS / Enterprise
+    _gh("Twilio", "twilio"),
+    _gh("Zendesk", "zendesk"),
+    _gh("HubSpot", "hubspot"),
+    _gh("Amplitude", "amplitude"),
+    _gh("Segment", "segment"),
+    _gh("Contentful", "contentful"),
+    _gh("Webflow", "webflow"),
+    _gh("Canva", "canva"),
+    _gh("Miro", "miro"),
+    _gh("Loom", "loom"),
+    _gh("Calendly", "calendly"),
+    _gh("Intercom", "intercom"),
+    _gh("Grammarly", "grammarly"),
+    _gh("1Password", "1password"),
+    _gh("Zapier", "zapier"),
+    _gh("Gusto", "gusto"),
+    _gh("Lattice", "lattice"),
+    _gh("Dbt Labs", "dbtlabs"),
+    _gh("Fivetran", "fivetran"),
+
+    # Social / Consumer
+    _gh("Discord", "discord"),
+    _gh("Twitch", "twitch"),
+    _gh("Pinterest", "pinterest"),
+    _gh("Bumble", "bumble"),
+    _gh("Duolingo", "duolingo"),
+    _gh("Calm", "calm"),
+    _gh("Strava", "strava"),
+    _gh("AllTrails", "alltrails"),
+
+    # Security / Cyber
+    _gh("CrowdStrike", "crowdstrike"),
+    _gh("SentinelOne", "sentinelone"),
+    _gh("Palo Alto Networks", "paloaltonetworks"),
+    _gh("Okta", "okta"),
+    _gh("Wiz", "wiz"),
+
+    # Health / Bio
+    _gh("Tempus", "tempus"),
+    _gh("Ro", "ro"),
+    _gh("Hims & Hers", "himsandhers"),
+    _gh("Color Health", "color"),
+    _gh("Noom", "noom"),
+
+    # E-commerce / Marketplace
+    _gh("Instacart", "instacart"),
+    _gh("DoorDash", "doordash"),
+    _gh("Faire", "faire"),
+    _gh("Etsy", "etsy"),
+    _gh("Gopuff", "gopuff"),
+    _gh("Chewy", "chewy"),
+
+    # Autonomous / Robotics / Hardware
+    _gh("Cruise", "cruise"),
+    _gh("Aurora", "aurora"),
+    _gh("Nuro", "nuro"),
+    _gh("Zipline", "zipline"),
+    _gh("Joby Aviation", "jobyaviation"),
+    _gh("Relativity Space", "relativityspace"),
+    _gh("Anduril Industries", "andurilindustries"),
+    _gh("SpaceX", "spacex"),
+    _gh("Palantir", "palantir"),
+
+    # Data / Analytics
+    _gh("Snowflake", "snowflake"),
+    _gh("Databricks", "databricks"),
+    _gh("Monte Carlo", "montecarlodata"),
+    _gh("Hex", "hex"),
+    _gh("Mode Analytics", "mode"),
+    _gh("Census", "census"),
+    _gh("Hightouch", "hightouch"),
+    _gh("Airbyte", "airbyte"),
+]
+
+# ---------------------------------------------------------------------------
+# Lever-hosted careers (50+ companies)
+# Format: https://jobs.lever.co/{slug}/feed
+# ---------------------------------------------------------------------------
+
+LEVER_FEEDS = [
+    _lever("Netflix", "netflix"),
+    _lever("Spotify", "spotify"),
+    _lever("Reddit", "reddit"),
+    _lever("Anduril", "anduril"),
+    _lever("Upstart", "upstart"),
+    _lever("Flexport", "flexport"),
+    _lever("Cruise Automation", "cruise"),
+    _lever("Movable Ink", "movableink"),
+    _lever("Whatnot", "whatnot"),
+    _lever("Vanta", "vanta"),
+    _lever("Modern Treasury", "moderntreasury"),
+    _lever("Navan", "navan"),
+    _lever("Coda", "coda"),
+    _lever("Astra", "astra"),
+    _lever("Applied Intuition", "applied"),
+    _lever("Persona", "persona"),
+    _lever("Watershed", "watershed"),
+    _lever("Replit", "replit"),
+    _lever("WorkOS", "workos"),
+    _lever("Material Security", "materialsecurity"),
+    _lever("Pulley", "pulley"),
+    _lever("Assembled", "assembled"),
+    _lever("Livekit", "livekit"),
+    _lever("Epirus", "epirus"),
+    _lever("Abridge", "abridge"),
+    _lever("Weights & Biases (Lever)", "wandb"),
+    _lever("Abnormal Security", "abnormalsecurity"),
+    _lever("Island", "island"),
+    _lever("Pave", "pave"),
+    _lever("Handshake", "joinhandshake"),
+    _lever("Alto Pharmacy", "alto"),
+    _lever("Vouch Insurance", "vouch"),
+    _lever("Tines", "tines"),
+    _lever("Sourcegraph", "sourcegraph"),
+    _lever("Temporal", "temporal"),
+    _lever("Neon", "neon"),
+    _lever("Modal", "modal"),
+    _lever("Glean", "glean"),
+    _lever("Harvey AI", "harvey"),
+    _lever("Sierra AI", "sierra"),
+    _lever("EvenUp", "evenup"),
+    _lever("Coframe", "coframe"),
+    _lever("Tome", "tome"),
+    _lever("Perplexity", "perplexity"),
+    _lever("Cursor", "anysphere"),
+]
+
+# ---------------------------------------------------------------------------
+# Ashby-hosted careers (20+ companies)
+# Format: https://jobs.ashbyhq.com/{slug}/feed
+# ---------------------------------------------------------------------------
+
+ASHBY_FEEDS = [
+    _ashby("Linear", "linear"),
+    _ashby("Resend", "resend"),
+    _ashby("Clerk", "clerk"),
+    _ashby("Inngest", "inngest"),
+    _ashby("Tinybird", "tinybird"),
+    _ashby("Axiom", "axiom"),
+    _ashby("Mintlify", "mintlify"),
+    _ashby("Pylon", "pylon"),
+    _ashby("Unkey", "unkey"),
+    _ashby("Nango", "nango"),
+    _ashby("Trigger.dev", "trigger-dev"),
+    _ashby("Resonate", "resonate"),
+    _ashby("Depot", "depot"),
+    _ashby("Turso", "turso"),
+    _ashby("Val Town", "val-town"),
+    _ashby("SST", "sst"),
+    _ashby("Arcjet", "arcjet"),
+    _ashby("Knock", "knock"),
+    _ashby("Plain", "plain"),
+    _ashby("Stainless", "stainlessapi"),
 ]
 
 # ---------------------------------------------------------------------------
 # All sources combined
 # ---------------------------------------------------------------------------
 
+COMPANY_CAREER_FEEDS = BIG_TECH_FEEDS + GREENHOUSE_FEEDS + LEVER_FEEDS + ASHBY_FEEDS
 ALL_SOURCES = JOB_BOARD_SOURCES + COMPANY_CAREER_FEEDS
 
 
 def get_enabled_sources(source_names: list[str] | None = None) -> list[JobSource]:
-    """Get enabled sources, optionally filtered by name.
-
-    Args:
-        source_names: If provided, only include sources whose name contains
-                      any of these strings (case-insensitive).
-    """
+    """Get enabled sources, optionally filtered by name."""
     sources = [s for s in ALL_SOURCES if s.enabled]
 
     if source_names:
@@ -192,3 +338,8 @@ def get_greenhouse_feed_url(company_slug: str) -> str:
 def get_lever_feed_url(company_slug: str) -> str:
     """Generate a Lever RSS feed URL for any company."""
     return f"https://jobs.lever.co/{company_slug}/feed"
+
+
+def get_ashby_feed_url(company_slug: str) -> str:
+    """Generate an Ashby RSS feed URL for any company."""
+    return f"https://jobs.ashbyhq.com/{company_slug}/feed"

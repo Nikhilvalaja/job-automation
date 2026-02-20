@@ -1,10 +1,11 @@
-"""Tests for Discovery Bot — job scoring, dedup, source fetching.
+"""Tests for Discovery Bot — scoring, dedup, DB, parser, sources.
 
-All tests use mocked HTTP responses (no real API calls).
+All tests use mocked HTTP responses and in-memory/temp DB.
 """
 
 from __future__ import annotations
 
+import sqlite3
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,13 +14,18 @@ from src.discovery.preferences import JobPreferences, score_job
 from src.discovery.sources import (
     ALL_SOURCES,
     COMPANY_CAREER_FEEDS,
+    GREENHOUSE_FEEDS,
     JOB_BOARD_SOURCES,
+    LEVER_FEEDS,
+    ASHBY_FEEDS,
     SourceType,
     get_enabled_sources,
     get_greenhouse_feed_url,
     get_lever_feed_url,
+    get_ashby_feed_url,
 )
 from src.discovery.fetcher import _clean_html
+from src.discovery.parser import JobParser, _detect_category, _detect_level, _detect_years_min
 
 
 # ---------------------------------------------------------------------------
@@ -38,103 +44,40 @@ class TestJobScoring:
         )
 
     def test_title_keyword_match(self):
-        """Title keyword match should score high."""
-        score = score_job(
-            title="Software Engineer",
-            description="Join our team to build systems.",
-            company="Google",
-            location="Remote",
-            preferences=self.prefs,
-        )
-        # "software engineer" in title = 0.4, "remote" location = 0.2
+        score = score_job("Software Engineer", "Join our team.", "Google", "Remote", self.prefs)
         assert score >= 0.5
 
     def test_description_keyword_match(self):
-        """Description keyword match should score lower than title."""
-        score = score_job(
-            title="Developer",
-            description="We need a backend python developer",
-            company="Meta",
-            location="",
-            preferences=self.prefs,
-        )
-        # "backend" in desc = 0.15, "python" in desc = 0.15
+        score = score_job("Developer", "We need a backend python developer", "Meta", "", self.prefs)
         assert 0.2 <= score <= 0.6
 
     def test_excluded_keyword_rejects(self):
-        """Excluded keyword in title should return -1.0."""
-        score = score_job(
-            title="Software Engineering Intern",
-            description="Great opportunity",
-            company="Google",
-            location="NYC",
-            preferences=self.prefs,
-        )
+        score = score_job("Software Engineering Intern", "Great", "Google", "NYC", self.prefs)
         assert score == -1.0
 
     def test_excluded_in_desc_not_rejected(self):
-        """Excluded keyword in description (not title) should not auto-reject."""
-        score = score_job(
-            title="Software Engineer",
-            description="Reports to the director of engineering",
-            company="Google",
-            location="Remote",
-            preferences=self.prefs,
-        )
-        # "director" is only in description, not title — no auto-reject
+        score = score_job("Software Engineer", "Reports to the director", "Google", "Remote", self.prefs)
         assert score >= 0.0
 
     def test_location_match_bonus(self):
-        """Location match should add 0.2 bonus."""
-        score_with_loc = score_job(
-            title="Developer",
-            description="Build things",
-            company="Acme",
-            location="Remote",
-            preferences=self.prefs,
-        )
-        score_no_loc = score_job(
-            title="Developer",
-            description="Build things",
-            company="Acme",
-            location="San Francisco",
-            preferences=self.prefs,
-        )
-        assert score_with_loc > score_no_loc
+        s1 = score_job("Developer", "Build things", "Acme", "Remote", self.prefs)
+        s2 = score_job("Developer", "Build things", "Acme", "San Francisco", self.prefs)
+        assert s1 > s2
 
     def test_no_preferences_returns_neutral(self):
-        """Empty preferences should return 0.5 for all jobs."""
-        empty_prefs = JobPreferences()
-        score = score_job("Any Job", "Any desc", "Any Co", "", empty_prefs)
+        score = score_job("Any Job", "Any desc", "Any Co", "", JobPreferences())
         assert score == 0.5
 
     def test_multiple_keyword_matches(self):
-        """Multiple keyword matches should score higher."""
-        score_one = score_job(
-            title="Engineer",
-            description="Join our python team",
-            company="Co",
-            location="",
-            preferences=self.prefs,
-        )
-        score_multi = score_job(
-            title="Backend Software Engineer",
-            description="Build systems with python",
-            company="Co",
-            location="Remote",
-            preferences=self.prefs,
-        )
-        assert score_multi > score_one
+        s1 = score_job("Engineer", "Join our python team", "Co", "", self.prefs)
+        s2 = score_job("Backend Software Engineer", "Build with python", "Co", "Remote", self.prefs)
+        assert s2 > s1
 
     def test_score_capped_at_one(self):
-        """Score should never exceed 1.0."""
-        # Max everything: all keywords in title + desc + location
         score = score_job(
-            title="Software Engineer Backend Python Developer",
-            description="backend python software engineer remote new york",
-            company="Co",
-            location="Remote, New York",
-            preferences=self.prefs,
+            "Software Engineer Backend Python Developer",
+            "backend python software engineer remote new york",
+            "Co", "Remote, New York", self.prefs,
         )
         assert score <= 1.0
 
@@ -148,19 +91,28 @@ class TestSources:
 
     def test_all_sources_have_names(self):
         for source in ALL_SOURCES:
-            assert source.name, f"Source missing name: {source}"
+            assert source.name
 
     def test_all_sources_have_urls(self):
         for source in ALL_SOURCES:
-            assert source.url_template, f"Source {source.name} missing URL"
+            assert source.url_template
 
     def test_source_types_valid(self):
         for source in ALL_SOURCES:
             assert source.source_type in (SourceType.RSS, SourceType.API, SourceType.CAREER_RSS)
 
-    def test_get_enabled_sources_returns_all(self):
-        sources = get_enabled_sources()
-        assert len(sources) == len(ALL_SOURCES)
+    def test_total_sources_over_180(self):
+        """Should have 180+ total sources."""
+        assert len(ALL_SOURCES) >= 180
+
+    def test_greenhouse_feeds_over_100(self):
+        assert len(GREENHOUSE_FEEDS) >= 100
+
+    def test_lever_feeds_over_40(self):
+        assert len(LEVER_FEEDS) >= 40
+
+    def test_ashby_feeds_over_15(self):
+        assert len(ASHBY_FEEDS) >= 15
 
     def test_get_enabled_sources_filter(self):
         sources = get_enabled_sources(["indeed"])
@@ -168,20 +120,18 @@ class TestSources:
         assert all("indeed" in s.name.lower() for s in sources)
 
     def test_greenhouse_url(self):
-        url = get_greenhouse_feed_url("stripe")
-        assert url == "https://boards.greenhouse.io/stripe/feed"
+        assert get_greenhouse_feed_url("stripe") == "https://boards.greenhouse.io/stripe/feed"
 
     def test_lever_url(self):
-        url = get_lever_feed_url("netflix")
-        assert url == "https://jobs.lever.co/netflix/feed"
+        assert get_lever_feed_url("netflix") == "https://jobs.lever.co/netflix/feed"
 
-    def test_company_feeds_count(self):
-        """Should have a good number of company career feeds."""
-        assert len(COMPANY_CAREER_FEEDS) >= 20
+    def test_ashby_url(self):
+        assert get_ashby_feed_url("linear") == "https://jobs.ashbyhq.com/linear/feed"
 
-    def test_job_board_sources_count(self):
-        """Should have multiple job board sources."""
-        assert len(JOB_BOARD_SOURCES) >= 4
+    def test_no_duplicate_names(self):
+        """Each source should have a unique name."""
+        names = [s.name for s in ALL_SOURCES]
+        assert len(names) == len(set(names)), f"Duplicate source names found"
 
 
 # ---------------------------------------------------------------------------
@@ -189,20 +139,141 @@ class TestSources:
 # ---------------------------------------------------------------------------
 
 class TestHTMLCleanup:
-    """Test HTML stripping for feed descriptions."""
-
     def test_strips_tags(self):
-        result = _clean_html("<p>Hello <b>world</b></p>")
-        assert result == "Hello world"
+        assert _clean_html("<p>Hello <b>world</b></p>") == "Hello world"
 
     def test_handles_empty(self):
         assert _clean_html("") == ""
         assert _clean_html(None) == ""
 
     def test_truncates_long_text(self):
-        long_html = "<p>" + "x" * 5000 + "</p>"
-        result = _clean_html(long_html)
-        assert len(result) <= 2000
+        assert len(_clean_html("<p>" + "x" * 5000 + "</p>")) <= 2000
+
+
+# ---------------------------------------------------------------------------
+# Keyword Parser Tests
+# ---------------------------------------------------------------------------
+
+class TestKeywordParser:
+    """Test the keyword-based job parser (no GPT needed)."""
+
+    def test_detect_backend_category(self):
+        assert _detect_category("backend engineer", "api development") == "backend"
+
+    def test_detect_data_science_category(self):
+        assert _detect_category("data scientist", "machine learning models") == "data_science"
+
+    def test_detect_ml_category(self):
+        assert _detect_category("ml engineer", "deep learning") == "ml_engineer"
+
+    def test_detect_business_analyst(self):
+        assert _detect_category("business analyst", "reporting") == "business_analyst"
+
+    def test_detect_senior_level(self):
+        assert _detect_level("senior software engineer", "") == "senior"
+
+    def test_detect_entry_level(self):
+        assert _detect_level("junior developer", "") == "entry"
+
+    def test_detect_staff_level(self):
+        assert _detect_level("staff engineer", "") == "staff"
+
+    def test_detect_mid_level_default(self):
+        assert _detect_level("software engineer", "") == "mid"
+
+    def test_detect_years(self):
+        assert _detect_years_min("requires 3+ years of experience") == 3
+
+    def test_parse_full_job(self):
+        parser = JobParser()
+        result = parser.parse({
+            "title": "Senior Backend Engineer",
+            "company": "Stripe",
+            "description": "5+ years experience with python, aws, postgresql. Remote role. Bachelor's degree required.",
+            "location": "Remote",
+        })
+        assert result["category"] == "backend"
+        assert result["experience_level"] == "senior"
+        assert result["experience_years_min"] == 5
+        assert result["remote_type"] == "remote"
+        assert "python" in result["skills"]
+        assert result["education"] == "bachelors"
+
+    def test_parser_validates_fields(self):
+        """Parser should clean up invalid values."""
+        parser = JobParser()
+        result = parser._validate_fields({
+            "category": "INVALID",
+            "experience_level": "BOGUS",
+            "job_type": "weird",
+        })
+        assert result["category"] == "other"
+        assert result["experience_level"] == "mid"
+        assert result["job_type"] == "full_time"
+
+
+# ---------------------------------------------------------------------------
+# Database Tests
+# ---------------------------------------------------------------------------
+
+class TestDiscoveryDatabase:
+    """Test SQLite database operations."""
+
+    def test_init_db(self, tmp_path):
+        """Database should initialize without errors."""
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, get_db
+            init_db()
+            conn = get_db()
+            # Check table exists
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='discovered_jobs'"
+            ).fetchall()
+            conn.close()
+            assert len(rows) == 1
+
+    def test_insert_and_search(self, tmp_path):
+        """Should insert a job and find it via search."""
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, search_jobs
+            init_db()
+
+            job_id = insert_job({
+                "title": "Backend Engineer",
+                "company": "Stripe",
+                "url": "https://stripe.com/jobs/1",
+                "description": "Build payment systems",
+                "location": "Remote",
+                "source_name": "Greenhouse",
+                "score": 0.8,
+            })
+            assert job_id is not None
+
+            jobs, total = search_jobs(company="Stripe")
+            assert total == 1
+            assert jobs[0]["company"] == "Stripe"
+
+    def test_duplicate_url_rejected(self, tmp_path):
+        """Duplicate URLs should return None."""
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job
+            init_db()
+
+            id1 = insert_job({"title": "Job1", "url": "https://test.com/1", "company": ""})
+            id2 = insert_job({"title": "Job2", "url": "https://test.com/1", "company": ""})
+            assert id1 is not None
+            assert id2 is None  # Duplicate
+
+    def test_get_stats(self, tmp_path):
+        """Stats should reflect inserted jobs."""
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, get_stats
+            init_db()
+            insert_job({"title": "SWE", "url": "https://a.com/1", "company": "A"})
+            insert_job({"title": "MLE", "url": "https://b.com/2", "company": "B"})
+
+            stats = get_stats()
+            assert stats["total"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -210,12 +281,15 @@ class TestHTMLCleanup:
 # ---------------------------------------------------------------------------
 
 class TestDiscoveryBot:
-    """Test the Discovery Bot with mocked HTTP calls."""
+    """Test the Discovery Bot with mocked sources and DB."""
 
+    @patch("bots.discovery_bot.run.insert_job", return_value="abc123")
+    @patch("bots.discovery_bot.run.update_parsed_fields")
+    @patch("bots.discovery_bot.run.get_all_urls", return_value=set())
     @patch("bots.discovery_bot.run.fetch_source")
     @patch("bots.discovery_bot.run.get_enabled_sources")
-    def test_dry_run_does_not_create_jobs(self, mock_sources, mock_fetch):
-        """Dry run should not POST to backend."""
+    def test_discovery_stores_to_db(self, mock_sources, mock_fetch, mock_urls, mock_update, mock_insert):
+        """Discovery should store matched jobs in SQLite."""
         from bots.discovery_bot.run import DiscoveryBot
         from src.discovery.sources import JobSource, SourceType
 
@@ -223,24 +297,24 @@ class TestDiscoveryBot:
             JobSource(name="Test", source_type=SourceType.API, url_template="http://test.com"),
         ]
         mock_fetch.return_value = [
-            {"title": "SWE", "company": "Google", "url": "http://test.com/1",
-             "description": "Build software engineer stuff", "location": "Remote", "source_name": "Test"},
+            {"title": "Software Engineer", "company": "Google", "url": "http://test.com/1",
+             "description": "Build software engineer systems", "location": "Remote", "source_name": "Test"},
         ]
 
-        bot = DiscoveryBot(dry_run=True)
+        bot = DiscoveryBot(dry_run=False)
         bot.start()
-        bot._existing_urls = set()
         bot._preferences = JobPreferences(keywords=["software engineer"], locations=["remote"])
 
         stats = bot.run_once()
         assert stats["matched"] >= 1
-        # Dry run should not actually POST
-        assert stats["created"] == stats["matched"]
+        assert stats["stored"] >= 1
+        mock_insert.assert_called()
 
+    @patch("bots.discovery_bot.run.get_all_urls", return_value={"http://existing.com/job1"})
     @patch("bots.discovery_bot.run.fetch_source")
     @patch("bots.discovery_bot.run.get_enabled_sources")
-    def test_deduplication(self, mock_sources, mock_fetch):
-        """Jobs with existing URLs should be skipped."""
+    def test_deduplication_via_db(self, mock_sources, mock_fetch, mock_urls):
+        """Jobs with URLs already in DB should be skipped."""
         from bots.discovery_bot.run import DiscoveryBot
         from src.discovery.sources import JobSource, SourceType
 
@@ -256,16 +330,16 @@ class TestDiscoveryBot:
 
         bot = DiscoveryBot(dry_run=True)
         bot.start()
-        bot._existing_urls = {"http://existing.com/job1"}  # Already tracked
         bot._preferences = JobPreferences(keywords=["software engineer"])
 
         stats = bot.run_once()
         assert stats["duplicates"] == 1
-        assert stats["matched"] == 1  # Only the new URL should match
+        assert stats["matched"] == 1
 
+    @patch("bots.discovery_bot.run.get_all_urls", return_value=set())
     @patch("bots.discovery_bot.run.fetch_source")
     @patch("bots.discovery_bot.run.get_enabled_sources")
-    def test_rejected_jobs_counted(self, mock_sources, mock_fetch):
+    def test_rejected_jobs_counted(self, mock_sources, mock_fetch, mock_urls):
         """Jobs with excluded keywords should be rejected."""
         from bots.discovery_bot.run import DiscoveryBot
         from src.discovery.sources import JobSource, SourceType
@@ -280,7 +354,6 @@ class TestDiscoveryBot:
 
         bot = DiscoveryBot(dry_run=True)
         bot.start()
-        bot._existing_urls = set()
         bot._preferences = JobPreferences(
             keywords=["software engineer"],
             excluded_keywords=["intern"],

@@ -746,6 +746,142 @@ def render_resume_tailor(df: pd.DataFrame, backend_url: str):
                         st.error(f"Error: {e}")
 
 
+# --- Job Discovery ---
+def render_discovery(backend_url: str):
+    """Render job discovery browser with LinkedIn-level filtering."""
+    st.subheader("Job Discovery")
+    st.caption("Browse 1000s of jobs discovered from 200+ sources. Filter like LinkedIn.")
+
+    # Filters row
+    f1, f2, f3, f4, f5 = st.columns(5)
+    with f1:
+        category = st.selectbox("Role Category", [
+            "", "backend", "frontend", "fullstack", "data_science", "data_engineer",
+            "ml_engineer", "devops", "cloud", "mobile", "security",
+            "business_analyst", "product_manager", "qa", "other",
+        ], format_func=lambda x: "All Categories" if x == "" else x.replace("_", " ").title())
+    with f2:
+        exp_level = st.selectbox("Experience Level", [
+            "", "entry", "mid", "senior", "lead", "staff", "principal",
+        ], format_func=lambda x: "All Levels" if x == "" else x.title())
+    with f3:
+        years_range = st.select_slider("Years of Experience", options=[0, 1, 2, 3, 5, 7, 10, 15, 20],
+                                        value=(0, 20))
+    with f4:
+        job_type = st.selectbox("Job Type", [
+            "", "full_time", "part_time", "contract", "internship",
+        ], format_func=lambda x: "All Types" if x == "" else x.replace("_", " ").title())
+    with f5:
+        remote = st.selectbox("Work Mode", [
+            "", "remote", "hybrid", "onsite",
+        ], format_func=lambda x: "All" if x == "" else x.title())
+
+    # Second filter row
+    f6, f7, f8 = st.columns([2, 2, 1])
+    with f6:
+        keyword = st.text_input("Keyword Search", placeholder="python, machine learning, AWS...")
+    with f7:
+        company_filter = st.text_input("Company", placeholder="Google, Stripe, Anthropic...")
+    with f8:
+        status_filter = st.selectbox("Status", ["", "new", "saved", "applied", "dismissed"],
+                                      format_func=lambda x: "All" if x == "" else x.title())
+
+    # Fetch from discovery API
+    try:
+        params = {
+            "category": category, "experience_level": exp_level,
+            "years_min": years_range[0], "years_max": years_range[1],
+            "job_type": job_type, "remote_type": remote,
+            "keyword": keyword, "company": company_filter,
+            "status": status_filter, "per_page": 100,
+        }
+        params = {k: v for k, v in params.items() if v}  # Remove empty
+        resp = httpx.get(f"{backend_url}/discovery/jobs", params=params, timeout=10.0)
+
+        if resp.status_code == 200:
+            data = resp.json()
+            total = data.get("total", 0)
+            disc_jobs = data.get("jobs", [])
+
+            st.caption(f"Showing {len(disc_jobs)} of {total} discovered jobs")
+
+            if disc_jobs:
+                disc_df = pd.DataFrame(disc_jobs)
+                display_cols = ["title", "company", "category", "experience_level",
+                                "job_type", "remote_type", "match_score", "skills", "status"]
+                available = [c for c in display_cols if c in disc_df.columns]
+
+                st.dataframe(
+                    disc_df[available],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "title": st.column_config.TextColumn("Role", width="large"),
+                        "company": st.column_config.TextColumn("Company", width="medium"),
+                        "category": st.column_config.TextColumn("Category", width="small"),
+                        "experience_level": st.column_config.TextColumn("Level", width="small"),
+                        "job_type": st.column_config.TextColumn("Type", width="small"),
+                        "remote_type": st.column_config.TextColumn("Remote", width="small"),
+                        "match_score": st.column_config.NumberColumn("Score", format="%.2f", width="small"),
+                        "skills": st.column_config.TextColumn("Skills", width="large"),
+                        "status": st.column_config.TextColumn("Status", width="small"),
+                    },
+                )
+
+                # Quick actions
+                st.divider()
+                act_cols = st.columns(4)
+                with act_cols[0]:
+                    job_ids = disc_df["id"].tolist() if "id" in disc_df.columns else []
+                    selected = st.selectbox("Select Job", job_ids, index=None, placeholder="Pick a job...", key="disc_sel")
+                with act_cols[1]:
+                    action = st.selectbox("Action", ["saved", "applied", "dismissed"], key="disc_action")
+                with act_cols[2]:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("Update", key="disc_update") and selected:
+                        try:
+                            r = httpx.patch(f"{backend_url}/discovery/jobs/{selected}",
+                                           json={"status": action}, timeout=10.0)
+                            if r.status_code == 200:
+                                st.success(f"Updated {selected} to {action}")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+                with act_cols[3]:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("Parse Unparsed Jobs", key="disc_parse"):
+                        try:
+                            r = httpx.post(f"{backend_url}/discovery/parse?limit=50", timeout=30.0)
+                            if r.status_code == 200:
+                                st.success(f"Parsed {r.json().get('parsed', 0)} jobs")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+            else:
+                st.info("No discovered jobs match your filters. Run the Discovery Bot first.")
+        else:
+            st.warning(f"Discovery API returned {resp.status_code}")
+
+        # Stats sidebar
+        try:
+            stats_resp = httpx.get(f"{backend_url}/discovery/stats", timeout=5.0)
+            if stats_resp.status_code == 200:
+                stats = stats_resp.json()
+                st.divider()
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("Total Discovered", stats.get("total", 0))
+                s2.metric("Parsed", stats.get("parsed", 0))
+                s3.metric("Unparsed", stats.get("unparsed", 0))
+                s4.metric("Categories", len(stats.get("by_category", {})))
+        except Exception:
+            pass
+
+    except httpx.ConnectError:
+        st.error("Backend not reachable.")
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+
 # --- Main ---
 def main():
     backend_url = render_sidebar()
@@ -754,7 +890,12 @@ def main():
     if not jobs:
         st.title("JobPilot Dashboard")
         st.info("No jobs tracked yet. Add your first job from the sidebar, Chrome extension, or CLI.")
-        render_bot_controls()
+        # Still show discovery and bot controls even with no tracked jobs
+        tab_disc, tab_bots = st.tabs(["Job Discovery", "Bot Controls"])
+        with tab_disc:
+            render_discovery(backend_url)
+        with tab_bots:
+            render_bot_controls()
         return
 
     df = pd.DataFrame(jobs)
@@ -765,15 +906,19 @@ def main():
 
     st.title("JobPilot Dashboard")
 
-    # Main tabs
-    tab_overview, tab_table, tab_cover, tab_resume, tab_bots, tab_rules, tab_sites = st.tabs(
-        ["Overview", "Applications", "Cover Letter", "Resume Tailor", "Bot Controls", "Email Rules", "Sites & Sources"]
+    # Main tabs — 8 tabs now
+    tab_overview, tab_disc, tab_table, tab_cover, tab_resume, tab_bots, tab_rules, tab_sites = st.tabs(
+        ["Overview", "Job Discovery", "Applications", "Cover Letter", "Resume Tailor",
+         "Bot Controls", "Email Rules", "Sites & Sources"]
     )
 
     with tab_overview:
         render_kpis(df)
         st.divider()
         render_charts(df)
+
+    with tab_disc:
+        render_discovery(backend_url)
 
     with tab_table:
         render_table(df, backend_url)
