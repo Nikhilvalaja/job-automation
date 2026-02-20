@@ -25,14 +25,18 @@ import sys
 from bots.base import BaseBot
 from src.config import get_settings
 from src.discovery.database import (
+    get_all_fingerprints,
     get_all_urls,
+    get_source_cache,
     get_stats,
     get_unparsed_jobs,
     init_db,
     insert_job,
     update_parsed_fields,
+    update_source_stats,
+    _compute_fingerprint,
 )
-from src.discovery.fetcher import fetch_source
+from src.discovery.fetcher import fetch_source, get_last_fetch_meta
 from src.discovery.parser import JobParser
 from src.discovery.preferences import JobPreferences, score_job
 from src.discovery.sources import get_enabled_sources
@@ -79,41 +83,77 @@ class DiscoveryBot(BaseBot):
         return self._run_discovery()
 
     def _run_discovery(self) -> dict:
-        """Full discovery: fetch → score → store → parse."""
+        """Full discovery: fetch → score → store → parse.
+
+        Uses 3-layer architecture:
+        - ETag/If-Modified-Since caching for efficient re-fetching
+        - URL + fingerprint dedup (cross-source matching)
+        - Per-source stats tracking
+        """
         prefs = self._preferences or JobPreferences.from_config()
 
         query = prefs.keywords[0] if prefs.keywords else "software engineer"
         location = prefs.locations[0] if prefs.locations else ""
 
-        # Load existing URLs from DB for dedup
+        # Load existing URLs and fingerprints from DB for dedup
         existing_urls = get_all_urls()
-        logger.info(f"Loaded {len(existing_urls)} existing URLs for dedup")
+        existing_fps = get_all_fingerprints()
+        logger.info(f"Loaded {len(existing_urls)} URLs + {len(existing_fps)} fingerprints for dedup")
 
         sources = get_enabled_sources(self.source_filter)
         logger.info(f"Scanning {len(sources)} sources...")
 
-        # Fetch from all sources
+        # Fetch from all sources with ETag caching
         all_jobs: list[dict] = []
         source_errors = 0
 
         for source in sources:
             try:
-                jobs = fetch_source(source, query=query, location=location)
+                # Get cached ETag/Last-Modified for conditional requests
+                cache = get_source_cache(source.name)
+                jobs = fetch_source(
+                    source, query=query, location=location,
+                    etag=cache.get("etag", ""), modified=cache.get("last_modified", ""),
+                )
                 all_jobs.extend(jobs)
+
+                # Track source stats with caching metadata
+                meta = get_last_fetch_meta(source.name)
+                layer = "A" if source.source_type.value == "api" else "B"
+                update_source_stats(
+                    source.name, source.source_type.value, source.url_template,
+                    job_count=len(jobs), layer=layer,
+                    etag=meta.get("etag", ""),
+                    last_modified=meta.get("modified", ""),
+                    content_hash=meta.get("content_hash", ""),
+                )
             except Exception as e:
                 logger.error(f"Source {source.name} failed: {e}")
                 source_errors += 1
+                update_source_stats(
+                    source.name, source.source_type.value, source.url_template,
+                    job_count=0, error=True,
+                )
 
         logger.info(f"Found {len(all_jobs)} total jobs across all sources")
 
-        # Score, filter, dedup, store
+        # Score, filter, dedup (URL + fingerprint), store
         matched = []
         rejected = 0
         duplicates = 0
         stored = 0
 
         for job in all_jobs:
+            # Dedup pass 1: exact URL match
             if job["url"] in existing_urls:
+                duplicates += 1
+                continue
+
+            # Dedup pass 2: fingerprint match (catches same job from different sources)
+            fp = _compute_fingerprint(
+                job.get("title", ""), job.get("company", ""), job.get("location", ""),
+            )
+            if fp in existing_fps:
                 duplicates += 1
                 continue
 
@@ -133,6 +173,7 @@ class DiscoveryBot(BaseBot):
                 job["score"] = score
                 matched.append(job)
                 existing_urls.add(job["url"])
+                existing_fps.add(fp)
 
         matched.sort(key=lambda j: j["score"], reverse=True)
 

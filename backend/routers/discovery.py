@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from src.discovery.database import (
+    get_companies,
     get_job_by_id,
     get_source_stats,
     get_stats,
@@ -110,8 +111,14 @@ async def discovery_stats() -> DiscoveryStatsResponse:
 
 @router.get("/sources")
 async def source_statistics():
-    """Get per-source fetch statistics."""
+    """Get per-source fetch statistics with ETag caching info."""
     return {"sources": get_source_stats()}
+
+
+@router.get("/companies")
+async def company_registry(limit: int = Query(100, ge=1, le=500)):
+    """Get the company registry sorted by job count."""
+    return {"companies": get_companies(limit=limit)}
 
 
 @router.patch("/jobs/{job_id}")

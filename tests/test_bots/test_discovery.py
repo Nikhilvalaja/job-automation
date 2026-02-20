@@ -26,7 +26,7 @@ from src.discovery.sources import (
 )
 from src.discovery.fetcher import _clean_html
 from src.discovery.parser import JobParser, _detect_category, _detect_level, _detect_years_min
-from src.discovery.database import _compute_fingerprint
+from src.discovery.database import _compute_fingerprint, normalize_company
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +234,42 @@ class TestFingerprint:
         fp2 = _compute_fingerprint("Data Scientist", "Meta", "NYC")
         assert fp1 != fp2
 
+    def test_company_suffix_normalization(self):
+        """Same company with different suffixes should match."""
+        fp1 = _compute_fingerprint("SWE", "Stripe Inc", "Remote")
+        fp2 = _compute_fingerprint("SWE", "Stripe", "Remote")
+        assert fp1 == fp2
+
+    def test_company_alias_normalization(self):
+        """Known aliases should match."""
+        fp1 = _compute_fingerprint("SWE", "Meta Platforms", "NYC")
+        fp2 = _compute_fingerprint("SWE", "Meta", "NYC")
+        assert fp1 == fp2
+
+
+class TestCompanyNormalization:
+    """Test the company name normalization system."""
+
+    def test_strips_inc(self):
+        assert normalize_company("Stripe Inc") == "stripe"
+
+    def test_strips_llc(self):
+        assert normalize_company("Acme LLC") == "acme"
+
+    def test_alias_meta(self):
+        assert normalize_company("Meta Platforms") == "meta"
+        assert normalize_company("Facebook") == "meta"
+
+    def test_alias_google(self):
+        assert normalize_company("Alphabet") == "google"
+
+    def test_preserves_simple_names(self):
+        assert normalize_company("Stripe") == "stripe"
+        assert normalize_company("Coinbase") == "coinbase"
+
+    def test_empty_string(self):
+        assert normalize_company("") == ""
+
 
 # ---------------------------------------------------------------------------
 # Database Tests
@@ -363,10 +399,14 @@ class TestDiscoveryBot:
 
     @patch("bots.discovery_bot.run.insert_job", return_value="abc123")
     @patch("bots.discovery_bot.run.update_parsed_fields")
+    @patch("bots.discovery_bot.run.get_all_fingerprints", return_value=set())
     @patch("bots.discovery_bot.run.get_all_urls", return_value=set())
+    @patch("bots.discovery_bot.run.update_source_stats")
+    @patch("bots.discovery_bot.run.get_source_cache", return_value={"etag": "", "last_modified": ""})
+    @patch("bots.discovery_bot.run.get_last_fetch_meta", return_value={"etag": "", "modified": "", "content_hash": ""})
     @patch("bots.discovery_bot.run.fetch_source")
     @patch("bots.discovery_bot.run.get_enabled_sources")
-    def test_discovery_stores_to_db(self, mock_sources, mock_fetch, mock_urls, mock_update, mock_insert):
+    def test_discovery_stores_to_db(self, mock_sources, mock_fetch, mock_meta, mock_cache, mock_src_stats, mock_urls, mock_fps, mock_update, mock_insert):
         """Discovery should store matched jobs in SQLite."""
         from bots.discovery_bot.run import DiscoveryBot
         from src.discovery.sources import JobSource, SourceType
@@ -388,10 +428,14 @@ class TestDiscoveryBot:
         assert stats["stored"] >= 1
         mock_insert.assert_called()
 
+    @patch("bots.discovery_bot.run.get_all_fingerprints", return_value=set())
     @patch("bots.discovery_bot.run.get_all_urls", return_value={"http://existing.com/job1"})
+    @patch("bots.discovery_bot.run.update_source_stats")
+    @patch("bots.discovery_bot.run.get_source_cache", return_value={"etag": "", "last_modified": ""})
+    @patch("bots.discovery_bot.run.get_last_fetch_meta", return_value={"etag": "", "modified": "", "content_hash": ""})
     @patch("bots.discovery_bot.run.fetch_source")
     @patch("bots.discovery_bot.run.get_enabled_sources")
-    def test_deduplication_via_db(self, mock_sources, mock_fetch, mock_urls):
+    def test_deduplication_via_db(self, mock_sources, mock_fetch, mock_meta, mock_cache, mock_src_stats, mock_urls, mock_fps):
         """Jobs with URLs already in DB should be skipped."""
         from bots.discovery_bot.run import DiscoveryBot
         from src.discovery.sources import JobSource, SourceType
@@ -414,10 +458,14 @@ class TestDiscoveryBot:
         assert stats["duplicates"] == 1
         assert stats["matched"] == 1
 
+    @patch("bots.discovery_bot.run.get_all_fingerprints", return_value=set())
     @patch("bots.discovery_bot.run.get_all_urls", return_value=set())
+    @patch("bots.discovery_bot.run.update_source_stats")
+    @patch("bots.discovery_bot.run.get_source_cache", return_value={"etag": "", "last_modified": ""})
+    @patch("bots.discovery_bot.run.get_last_fetch_meta", return_value={"etag": "", "modified": "", "content_hash": ""})
     @patch("bots.discovery_bot.run.fetch_source")
     @patch("bots.discovery_bot.run.get_enabled_sources")
-    def test_rejected_jobs_counted(self, mock_sources, mock_fetch, mock_urls):
+    def test_rejected_jobs_counted(self, mock_sources, mock_fetch, mock_meta, mock_cache, mock_src_stats, mock_urls, mock_fps):
         """Jobs with excluded keywords should be rejected."""
         from bots.discovery_bot.run import DiscoveryBot
         from src.discovery.sources import JobSource, SourceType

@@ -2,14 +2,17 @@
 
 Handles:
 - RSS/Atom feed parsing (via feedparser)
-- Public JSON API parsing (RemoteOK, Arbeitnow, Jobicy, etc.)
+- Public JSON API parsing (RemoteOK, Arbeitnow, Jobicy, Himalayas, etc.)
 - Rate limiting per domain
+- ETag / If-Modified-Since caching for efficient re-fetching
+- Content hash comparison for change detection
 - HTML cleanup for descriptions
 - Graceful error handling (one failing source doesn't block others)
 """
 
 from __future__ import annotations
 
+import hashlib
 import time
 from urllib.parse import urlparse
 
@@ -45,16 +48,24 @@ def _clean_html(html: str) -> str:
     return text[:2000]  # Cap description length
 
 
-def fetch_rss(source: JobSource, query: str = "", location: str = "") -> list[dict]:
+def fetch_rss(source: JobSource, query: str = "", location: str = "",
+              etag: str = "", modified: str = "") -> list[dict]:
     """Fetch jobs from an RSS/Atom feed.
 
+    Supports conditional fetching via ETag/If-Modified-Since headers.
     Returns list of dicts: {title, company, url, description, location, source_name}
+    Also sets _last_etag and _last_modified on the returned list for caching.
     """
     url = source.url_template.format(query=query, location=location)
 
     try:
         _rate_limit(url, source.rate_limit_seconds)
-        feed = feedparser.parse(url)
+        feed = feedparser.parse(url, etag=etag or None, modified=modified or None)
+
+        # 304 Not Modified — no new content
+        if feed.status == 304 if hasattr(feed, "status") else False:
+            logger.debug(f"[304] {source.name} — not modified since last fetch")
+            return []
 
         if feed.bozo and not feed.entries:
             logger.warning(f"Feed error for {source.name}: {feed.bozo_exception}")
@@ -94,12 +105,28 @@ def fetch_rss(source: JobSource, query: str = "", location: str = "") -> list[di
                     "source_name": source.name,
                 })
 
+        # Capture caching headers for next fetch
+        _last_fetch_meta[source.name] = {
+            "etag": getattr(feed, "etag", "") or "",
+            "modified": getattr(feed, "modified", "") or "",
+            "content_hash": hashlib.md5(str(feed.entries[:5]).encode()).hexdigest()[:16],
+        }
+
         logger.info(f"Fetched {len(jobs)} jobs from {source.name}")
         return jobs
 
     except Exception as e:
         logger.error(f"Failed to fetch RSS from {source.name}: {e}")
         return []
+
+
+# Cache of ETag/Last-Modified from most recent fetches
+_last_fetch_meta: dict[str, dict] = {}
+
+
+def get_last_fetch_meta(source_name: str) -> dict:
+    """Get the ETag/Last-Modified from the most recent fetch of a source."""
+    return _last_fetch_meta.get(source_name, {"etag": "", "modified": "", "content_hash": ""})
 
 
 def fetch_api(source: JobSource, query: str = "", location: str = "") -> list[dict]:
@@ -237,10 +264,14 @@ API_PARSERS = {
 }
 
 
-def fetch_source(source: JobSource, query: str = "", location: str = "") -> list[dict]:
-    """Fetch jobs from any source (dispatches to RSS or API)."""
+def fetch_source(source: JobSource, query: str = "", location: str = "",
+                 etag: str = "", modified: str = "") -> list[dict]:
+    """Fetch jobs from any source (dispatches to RSS or API).
+
+    Pass etag/modified from previous fetch to enable conditional requests.
+    """
     if source.source_type in (SourceType.RSS, SourceType.CAREER_RSS):
-        return fetch_rss(source, query, location)
+        return fetch_rss(source, query, location, etag=etag, modified=modified)
     elif source.source_type == SourceType.API:
         return fetch_api(source, query, location)
     else:

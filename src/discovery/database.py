@@ -1,19 +1,23 @@
 """SQLite database for discovered jobs.
 
-Stores thousands of job postings with structured metadata for
-LinkedIn-level filtering (role category, experience level, job type, skills).
-Google Sheets can't handle this volume — SQLite is local, fast, and free.
+Robust database with:
+- discovered_jobs: main table with 25+ structured fields
+- discovery_sources: per-source tracking (last fetch, error count, ETag cache)
+- companies: normalized company registry for canonical dedup
+- Indexes on all filter columns for fast queries
+- Fingerprint-based dedup (hash of normalized title+company+location)
+- Company name normalization for cross-source matching
 
-Schema:
-- discovered_jobs: main table with all extracted fields
-- sources: tracks each discovery source and its schedule
-- Indexes on: category, experience_level, job_type, company, score
-- FTS5 full-text search on title, description, skills
+Design follows the 3-layer architecture:
+- Layer A: Aggregator feeds (Indeed, RemoteOK, We Work Remotely, etc.)
+- Layer B: ATS endpoints (Greenhouse, Lever, Ashby career feeds)
+- Layer C: Long-tail RSS feeds (BuiltIn, company career pages)
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 import uuid
 from datetime import datetime
@@ -26,6 +30,50 @@ from src.utils.logging import get_logger
 logger = get_logger(__name__)
 
 DB_PATH = PROJECT_ROOT / "data" / "discovered_jobs.db"
+
+
+# ---------------------------------------------------------------------------
+# Company name normalization for cross-source dedup
+# ---------------------------------------------------------------------------
+
+# Common suffixes to strip for normalization
+_COMPANY_SUFFIXES = re.compile(
+    r"\s*\b(inc|llc|ltd|corp|corporation|co|company|group|holdings|"
+    r"technologies|tech|labs|software|solutions|services|international|"
+    r"global|gmbh|ag|plc|sa|pty)\b\.?$",
+    re.IGNORECASE,
+)
+
+# Known aliases: map variant names to canonical form
+_COMPANY_ALIASES = {
+    "meta platforms": "meta",
+    "facebook": "meta",
+    "alphabet": "google",
+    "microsoft corporation": "microsoft",
+    "amazon.com": "amazon",
+    "amazon web services": "aws",
+    "aws": "aws",
+    "apple inc": "apple",
+    "ibm corporation": "ibm",
+}
+
+
+def normalize_company(name: str) -> str:
+    """Normalize a company name for dedup matching.
+
+    Strips suffixes (Inc, LLC, etc.), lowercases, resolves known aliases.
+    """
+    if not name:
+        return ""
+    cleaned = name.strip().lower()
+    # Check aliases first
+    if cleaned in _COMPANY_ALIASES:
+        return _COMPANY_ALIASES[cleaned]
+    # Strip common suffixes
+    cleaned = _COMPANY_SUFFIXES.sub("", cleaned).strip()
+    # Remove trailing punctuation
+    cleaned = cleaned.rstrip(".,- ")
+    return cleaned or name.lower().strip()
 
 
 def get_db() -> sqlite3.Connection:
@@ -82,16 +130,37 @@ def init_db() -> None:
                 updated_at TEXT DEFAULT ''
             );
 
-            -- Source tracking table
+            -- Source tracking table with ETag caching and scheduling
             CREATE TABLE IF NOT EXISTS discovery_sources (
                 source_name TEXT PRIMARY KEY,
-                source_type TEXT DEFAULT '',
+                source_type TEXT DEFAULT '',       -- rss, api, career_rss
+                layer TEXT DEFAULT 'B',            -- A=aggregator, B=ATS, C=long-tail
                 base_url TEXT DEFAULT '',
                 last_fetched_at TEXT DEFAULT '',
                 last_job_count INTEGER DEFAULT 0,
                 total_jobs_found INTEGER DEFAULT 0,
                 error_count INTEGER DEFAULT 0,
-                enabled INTEGER DEFAULT 1
+                consecutive_errors INTEGER DEFAULT 0,
+                enabled INTEGER DEFAULT 1,
+                -- HTTP caching for efficient re-fetching
+                etag TEXT DEFAULT '',
+                last_modified TEXT DEFAULT '',
+                content_hash TEXT DEFAULT '',       -- hash of last response for change detection
+                -- Scheduling policy
+                fetch_interval_minutes INTEGER DEFAULT 120
+            );
+
+            -- Company registry for canonical dedup
+            CREATE TABLE IF NOT EXISTS companies (
+                company_id TEXT PRIMARY KEY,
+                name_raw TEXT DEFAULT '',
+                name_normalized TEXT DEFAULT '' UNIQUE,
+                domain TEXT DEFAULT '',
+                ats_type TEXT DEFAULT '',          -- greenhouse, lever, ashby, workday, etc.
+                career_url TEXT DEFAULT '',
+                job_count INTEGER DEFAULT 0,
+                first_seen TEXT DEFAULT '',
+                last_seen TEXT DEFAULT ''
             );
         """)
 
@@ -119,20 +188,71 @@ def init_db() -> None:
 
 def _migrate_columns(conn: sqlite3.Connection) -> None:
     """Add columns that may not exist in older DB versions."""
+    # discovered_jobs migrations
     existing = {row[1] for row in conn.execute("PRAGMA table_info(discovered_jobs)").fetchall()}
-    migrations = [
+    job_migrations = [
         ("fingerprint", "TEXT DEFAULT ''"),
         ("applied_at", "TEXT DEFAULT ''"),
     ]
-    for col_name, col_type in migrations:
+    for col_name, col_type in job_migrations:
         if col_name not in existing:
             conn.execute(f"ALTER TABLE discovered_jobs ADD COLUMN {col_name} {col_type}")
 
+    # discovery_sources migrations
+    try:
+        src_cols = {row[1] for row in conn.execute("PRAGMA table_info(discovery_sources)").fetchall()}
+        src_migrations = [
+            ("layer", "TEXT DEFAULT 'B'"),
+            ("etag", "TEXT DEFAULT ''"),
+            ("last_modified", "TEXT DEFAULT ''"),
+            ("content_hash", "TEXT DEFAULT ''"),
+            ("fetch_interval_minutes", "INTEGER DEFAULT 120"),
+            ("consecutive_errors", "INTEGER DEFAULT 0"),
+        ]
+        for col_name, col_type in src_migrations:
+            if col_name not in src_cols:
+                conn.execute(f"ALTER TABLE discovery_sources ADD COLUMN {col_name} {col_type}")
+    except Exception:
+        pass  # Table might not exist yet
+
 
 def _compute_fingerprint(title: str, company: str, location: str) -> str:
-    """Compute a dedup fingerprint from normalized fields."""
-    normalized = f"{title.lower().strip()}|{company.lower().strip()}|{location.lower().strip()}"
+    """Compute a dedup fingerprint from normalized fields.
+
+    Uses company normalization for cross-source matching.
+    """
+    norm_company = normalize_company(company)
+    normalized = f"{title.lower().strip()}|{norm_company}|{location.lower().strip()}"
     return hashlib.md5(normalized.encode()).hexdigest()[:16]
+
+
+def _register_company(conn: sqlite3.Connection, company: str, source_name: str) -> None:
+    """Register or update a company in the company registry."""
+    if not company:
+        return
+    norm = normalize_company(company)
+    now = datetime.now().isoformat()
+    # Detect ATS type from source name
+    ats_type = ""
+    src_lower = source_name.lower()
+    if "greenhouse" in src_lower or "(GH)" in source_name:
+        ats_type = "greenhouse"
+    elif "lever" in src_lower:
+        ats_type = "lever"
+    elif "ashby" in src_lower:
+        ats_type = "ashby"
+
+    try:
+        conn.execute(
+            """INSERT INTO companies (company_id, name_raw, name_normalized, ats_type, first_seen, last_seen, job_count)
+               VALUES (?, ?, ?, ?, ?, ?, 1)
+               ON CONFLICT(name_normalized) DO UPDATE SET
+                   last_seen=excluded.last_seen,
+                   job_count=job_count + 1""",
+            (str(uuid.uuid4())[:8], company, norm, ats_type, now, now),
+        )
+    except Exception:
+        pass  # Best-effort company tracking
 
 
 def insert_job(job: dict) -> str | None:
@@ -161,6 +281,8 @@ def insert_job(job: dict) -> str | None:
                 datetime.now().isoformat(),
             ),
         )
+        # Register company in the registry
+        _register_company(conn, job.get("company", ""), job.get("source_name", ""))
         conn.commit()
         return job_id
     except sqlite3.IntegrityError:
@@ -208,27 +330,83 @@ def mark_tracked(job_id: str) -> None:
 
 
 def update_source_stats(source_name: str, source_type: str, base_url: str,
-                        job_count: int, error: bool = False) -> None:
-    """Track per-source fetch statistics."""
+                        job_count: int, error: bool = False,
+                        etag: str = "", last_modified: str = "",
+                        content_hash: str = "", layer: str = "B") -> None:
+    """Track per-source fetch statistics with ETag caching."""
     conn = get_db()
     try:
         conn.execute(
-            """INSERT INTO discovery_sources (source_name, source_type, base_url,
-                   last_fetched_at, last_job_count, total_jobs_found, error_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO discovery_sources (source_name, source_type, base_url, layer,
+                   last_fetched_at, last_job_count, total_jobs_found, error_count,
+                   consecutive_errors, etag, last_modified, content_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(source_name) DO UPDATE SET
                    last_fetched_at=excluded.last_fetched_at,
                    last_job_count=excluded.last_job_count,
                    total_jobs_found=total_jobs_found + excluded.total_jobs_found,
-                   error_count=error_count + excluded.error_count""",
+                   error_count=error_count + excluded.error_count,
+                   consecutive_errors=CASE WHEN excluded.error_count > 0
+                       THEN consecutive_errors + 1 ELSE 0 END,
+                   etag=CASE WHEN excluded.etag != '' THEN excluded.etag ELSE etag END,
+                   last_modified=CASE WHEN excluded.last_modified != '' THEN excluded.last_modified ELSE last_modified END,
+                   content_hash=CASE WHEN excluded.content_hash != '' THEN excluded.content_hash ELSE content_hash END""",
             (
-                source_name, source_type, base_url,
+                source_name, source_type, base_url, layer,
                 datetime.now().isoformat(),
                 job_count, job_count,
                 1 if error else 0,
+                1 if error else 0,
+                etag, last_modified, content_hash,
             ),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_source_cache(source_name: str) -> dict:
+    """Get cached ETag/Last-Modified for a source (for conditional requests)."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT etag, last_modified, content_hash FROM discovery_sources WHERE source_name=?",
+            (source_name,),
+        ).fetchone()
+        if row:
+            return {"etag": row["etag"], "last_modified": row["last_modified"],
+                    "content_hash": row["content_hash"]}
+        return {"etag": "", "last_modified": "", "content_hash": ""}
+    except Exception:
+        return {"etag": "", "last_modified": "", "content_hash": ""}
+    finally:
+        conn.close()
+
+
+def get_companies(limit: int = 100) -> list[dict]:
+    """Get the company registry sorted by job count."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM companies ORDER BY job_count DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def get_all_fingerprints() -> set[str]:
+    """Get all fingerprints for cross-source dedup."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT fingerprint FROM discovered_jobs WHERE fingerprint != ''"
+        ).fetchall()
+        return {r["fingerprint"] for r in rows}
+    except Exception:
+        return set()
     finally:
         conn.close()
 
