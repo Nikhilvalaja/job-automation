@@ -17,8 +17,9 @@
 | M7 | Dashboard | Streamlit + Plotly with KPIs, charts, tables, filters | - |
 | M8 | Cover Letter | LLM + template modes, tone control, resume tailor | 9 |
 | M9 | Discovery Bot | 297 sources, SQLite DB, FTS5, adaptive scheduling, 3-pass dedup | 89 |
+| M10 | Resume Intelligence | Skill taxonomy (500+), JD normalizer, resume parser, scorer, backup/retention, dashboard v2 | 153 |
 
-**Current total: 159 tests passing**
+**Current total: 312 tests passing**
 
 ---
 
@@ -804,12 +805,12 @@ same location/industry          → 0.3
 ## Build Order
 
 ```
+M10: Resume Intelligence + Safety   <-- DONE: JD normalization + resume parsing
+     |                                   + embeddings + scoring + backups
+     |                                   + pagination + retention + dashboard UX
 YOU ARE HERE
      |
      v
-M10: Resume Intelligence + Safety   <-- JD normalization + resume parsing
-     |                                   + embeddings + scoring + backups
-     v                                   + pagination + retention + dashboard UX
 M11: Resume Optimizer                <-- LLM rewrite under constraints
      |                                   + validation engine (zero tolerance)
      v                                   + Resume Studio tab + DOCX export
@@ -843,12 +844,12 @@ M16: Supervisor Dashboard            <-- unified command center
 | # | Competency | Milestone | Status |
 |---|-----------|-----------|--------|
 | 1 | Normalize companies (aliases, domains) | M9 | DONE |
-| 2 | Normalize titles (Sr/Senior, DE/Data Engineer) | M10 | Planned |
+| 2 | Normalize titles (Sr/Senior, DE/Data Engineer) | M10 | DONE |
 | 3 | Detect ATS type from URL | M9 | DONE |
 | 4 | Pull jobs via structured endpoints when possible | M9 | DONE |
-| 5 | Dedupe via URL + ID + embedding similarity | M9 (URL+ID), M10 (embedding) | Partial |
-| 6 | Extract skills & tags from JD (must-have vs nice-to-have) | M10 | Planned |
-| 7 | Score relevance vs your resume (weighted formula) | M10 | Planned |
+| 5 | Dedupe via URL + ID + embedding similarity | M9 (URL+ID), M10 (embedding) | DONE |
+| 6 | Extract skills & tags from JD (must-have vs nice-to-have) | M10 | DONE |
+| 7 | Score relevance vs your resume (weighted formula) | M10 | DONE |
 | 8 | Track first_seen vs posted_at vs refreshed | M9 | DONE |
 | 9 | Classify emails into pipeline stages | M3 | DONE |
 | 10 | Enforce outreach cooldown + anti-spam limits | M12, M14 | Planned |
@@ -906,5 +907,5 @@ M16: Supervisor Dashboard            <-- unified command center
 - **Dedup:** 3-pass (URL + ATS job_id + fingerprint)
 - **Scheduling:** Adaptive (60-360 min based on source productivity)
 - **Caching:** ETag + If-Modified-Since, content hash for change detection
-- **Tests:** 159 passing
-- **Commits:** 12 on main
+- **Tests:** 312 passing
+- **Commits:** 14 on main

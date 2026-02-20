@@ -379,3 +379,39 @@ Major roadmap restructure to integrate the Resume Optimization Engine into the m
 118 new tests across 6 test files.
 
 ---
+
+## 2026-02-20 — Milestone 10 Phase 2: Dashboard v2 + Resume Management
+
+### Built
+3 new modules + major dashboard upgrade:
+
+1. **Resume Store** (`src/ml/resume_store.py`) — SQLite CRUD for resumes: save, get, list, delete, set default
+2. **Analysis API** (`backend/routers/analysis.py`) — 10 endpoints:
+   - Resume CRUD: upload+parse, list, detail, delete, set default
+   - JD normalize, score by resume ID, score by text, suggest best resume
+   - DB health: backup status, retention stats, row counts
+3. **Dashboard v2** (`dashboard/app.py`) — Major upgrade:
+   - **Discovery tab**: ProgressColumn for color-coded match scores, pagination with prev/next navigation,
+     JD analysis panel (confidence badge, must-have vs nice-to-have skill tags, responsibilities),
+     resume suggestion on apply, score indicators in job selector (`[+72%]`, `[~45%]`, `[-20%]`)
+   - **My Resumes tab** (new): Upload resume text, auto-parse, view skill inventory with color tags,
+     skill categories breakdown, set default, delete, view full parsed JSON
+   - **Sidebar DB health widget**: Discovery DB size, resume count, backup status (ok/warning/critical),
+     retention stats (active vs archived jobs)
+   - Helper functions: score_badge(), confidence_badge(), skill_tags_html()
+4. **Registered** analysis router in `backend/main.py`
+
+### Tests: 312 passing (up from 277)
+35 new tests:
+- `test_resume_store.py` — 19 tests (CRUD, default management, edge cases)
+- `test_analysis_router.py` — 16 tests (API endpoints, upload/parse, JD normalize, health)
+
+### M10 Now Complete
+All 5 parts delivered:
+- Part A: Safety (backup, retention) — done
+- Part B: JD normalization (skill taxonomy, title normalizer, JD normalizer) — done
+- Part C: Resume structuring (resume parser, bullet analyzer) — done
+- Part D: Embedding + scoring (embeddings, scorer) — done
+- Part E: Dashboard improvements (score colors, JD analysis, My Resumes, DB health) — done
+
+---
