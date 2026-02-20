@@ -1497,6 +1497,93 @@ def render_signals(backend_url: str):
                     st.error(f"Error: {e}")
 
 
+# --- Referral ---
+def render_referral(backend_url: str):
+    """Referral tab — find warm intro paths using CRM contacts."""
+    st.subheader("Referral Discovery")
+    st.caption("For any company you're targeting, find the warmest intro path in your network.")
+
+    ref_tab1, ref_tab2 = st.tabs(["Find Referral Paths", "Coverage Stats"])
+
+    # ----------------------------------------------------------------
+    # Tab 1: Find referral paths for a company
+    # ----------------------------------------------------------------
+    with ref_tab1:
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            target_company = st.text_input("Target Company:", placeholder="e.g. Stripe, Anthropic, Google")
+        with col2:
+            job_title = st.text_input("Role (optional):", placeholder="e.g. Backend Engineer")
+
+        col3, col4 = st.columns(2)
+        with col3:
+            top_n = st.slider("Max results", 1, 10, 5, key="ref_top_n")
+        with col4:
+            min_score = st.slider("Min score", 0.0, 1.0, 0.2, 0.05, key="ref_min_score")
+
+        if st.button("Find Paths", key="find_ref_btn") and target_company:
+            try:
+                r = requests.get(
+                    f"{backend_url}/referral/paths",
+                    params={"company": target_company, "job_title": job_title,
+                            "top_n": top_n, "min_score": min_score},
+                    timeout=15,
+                )
+                if r.ok:
+                    data = r.json()
+                    paths = data.get("paths", [])
+                    if not paths:
+                        st.info(f"No referral contacts found for **{target_company}** (min score: {min_score:.0%}).\nAdd contacts to your CRM to improve coverage.")
+                    else:
+                        st.success(f"Found **{len(paths)}** referral path(s) to **{target_company}**")
+                        for p in paths:
+                            tier_icon = {"direct": "🟢", "former": "🔵", "industry": "🟡", "none": "⚪"}.get(p["tier"], "⚪")
+                            with st.expander(
+                                f"{tier_icon} {p['name']} ({p.get('company','?')}) — {p['score']:.0%}",
+                                expanded=p["score"] >= 0.7,
+                            ):
+                                c1, c2 = st.columns(2)
+                                with c1:
+                                    st.write(f"**Email:** {p['email']}")
+                                    st.write(f"**Tier:** {p['tier']}")
+                                    st.write(f"**Reasons:** {', '.join(p['reasons'])}")
+                                with c2:
+                                    st.metric("Score", f"{p['score']:.0%}")
+                                    st.write(f"**Last contacted:** {p.get('last_contacted') or 'never'}")
+                                    st.write(f"**Touchpoints:** {p.get('touchpoint_count', 0)}")
+                                st.markdown("**Suggested ask:**")
+                                st.info(p.get("suggested_ask", ""))
+                else:
+                    st.error(f"Error: {r.text}")
+            except Exception as e:
+                st.error(f"Request failed: {e}")
+
+    # ----------------------------------------------------------------
+    # Tab 2: Coverage stats
+    # ----------------------------------------------------------------
+    with ref_tab2:
+        st.markdown("#### Network Coverage")
+        try:
+            r = requests.get(f"{backend_url}/referral/stats", timeout=10)
+            stats = r.json() if r.ok else {}
+        except Exception:
+            stats = {}
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Contacts", stats.get("total_contacts", 0))
+        m2.metric("With Company", stats.get("contacts_with_company", 0))
+        m3.metric("Spoke Before", stats.get("contacts_spoken_to", 0))
+        m4.metric("Unique Companies", stats.get("unique_companies", 0))
+
+        companies = stats.get("top_companies", [])
+        if companies:
+            st.markdown("**Companies in your network:**")
+            st.write(", ".join(companies[:30]))
+
+        st.markdown("---")
+        st.caption("Tip: Add contacts to CRM (CRM tab → Add Contact) to improve referral coverage.")
+
+
 # --- Outreach ---
 def render_outreach(backend_url: str):
     """Outreach tab — draft approval, A/B stats, sequence status."""
@@ -2483,11 +2570,11 @@ def main():
 
     st.title("JobPilot Dashboard")
 
-    # Main tabs — 12 tabs
+    # Main tabs — 13 tabs
     (tab_overview, tab_disc, tab_table, tab_my_resumes,
-     tab_cover, tab_resume, tab_crm, tab_signals, tab_outreach, tab_bots, tab_rules, tab_sites) = st.tabs(
+     tab_cover, tab_resume, tab_crm, tab_referral, tab_signals, tab_outreach, tab_bots, tab_rules, tab_sites) = st.tabs(
         ["Overview", "Job Discovery", "Applications", "My Resumes",
-         "Cover Letter", "Resume Studio", "CRM", "Signals", "Outreach", "Bot Controls", "Email Rules", "Sites & Sources"]
+         "Cover Letter", "Resume Studio", "CRM", "Referral", "Signals", "Outreach", "Bot Controls", "Email Rules", "Sites & Sources"]
     )
 
     with tab_overview:
@@ -2512,6 +2599,9 @@ def main():
 
     with tab_crm:
         render_crm(backend_url)
+
+    with tab_referral:
+        render_referral(backend_url)
 
     with tab_signals:
         render_signals(backend_url)
