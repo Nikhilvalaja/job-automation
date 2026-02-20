@@ -1,10 +1,13 @@
 """Discovery API — search, filter, and manage discovered jobs.
 
 Endpoints:
-- GET  /discovery/jobs      — Search with LinkedIn-level filters
-- GET  /discovery/stats     — Dashboard statistics
-- PATCH /discovery/jobs/{id} — Update status (save, dismiss, apply)
-- POST /discovery/parse     — Trigger ML parsing on unparsed jobs
+- GET  /discovery/jobs          — Search with LinkedIn-level filters + sorting
+- GET  /discovery/jobs/{id}     — Get full job details
+- GET  /discovery/stats         — Dashboard statistics
+- GET  /discovery/sources       — Per-source fetch statistics
+- PATCH /discovery/jobs/{id}    — Update status (save, dismiss, apply)
+- POST /discovery/jobs/{id}/apply — Mark as applied + push to main tracker
+- POST /discovery/parse         — Trigger keyword parsing on unparsed jobs
 """
 
 from __future__ import annotations
@@ -13,9 +16,13 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from src.discovery.database import (
+    get_job_by_id,
+    get_source_stats,
     get_stats,
     get_unparsed_jobs,
     init_db,
+    mark_applied,
+    mark_tracked,
     search_jobs,
     update_parsed_fields,
     update_status,
@@ -61,10 +68,11 @@ async def search_discovered_jobs(
     company: str = Query("", description="Filter by company name"),
     status: str = Query("", description="new, saved, applied, dismissed"),
     min_score: float = Query(0.0, description="Minimum match score"),
+    sort_by: str = Query("score", description="score, newest, oldest, company, title"),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
 ) -> DiscoverySearchResponse:
-    """Search discovered jobs with advanced filters."""
+    """Search discovered jobs with advanced filters and sorting."""
     offset = (page - 1) * per_page
     jobs, total = search_jobs(
         category=category,
@@ -77,10 +85,20 @@ async def search_discovered_jobs(
         company=company,
         status=status,
         min_score=min_score,
+        sort_by=sort_by,
         limit=per_page,
         offset=offset,
     )
     return DiscoverySearchResponse(jobs=jobs, total=total, page=page, per_page=per_page)
+
+
+@router.get("/jobs/{job_id}")
+async def get_discovered_job(job_id: str):
+    """Get full details for a single discovered job."""
+    job = get_job_by_id(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 @router.get("/stats", response_model=DiscoveryStatsResponse)
@@ -90,6 +108,12 @@ async def discovery_stats() -> DiscoveryStatsResponse:
     return DiscoveryStatsResponse(**stats)
 
 
+@router.get("/sources")
+async def source_statistics():
+    """Get per-source fetch statistics."""
+    return {"sources": get_source_stats()}
+
+
 @router.patch("/jobs/{job_id}")
 async def update_job_status(job_id: str, body: StatusUpdate):
     """Update a discovered job's status."""
@@ -97,6 +121,54 @@ async def update_job_status(job_id: str, body: StatusUpdate):
         raise HTTPException(status_code=400, detail="Status must be: new, saved, applied, dismissed")
     update_status(job_id, body.status)
     return {"ok": True, "id": job_id, "status": body.status}
+
+
+@router.post("/jobs/{job_id}/apply")
+async def apply_to_job(job_id: str):
+    """Mark a discovered job as applied and push it to the main tracker.
+
+    Returns the job URL so the frontend can open it.
+    """
+    job = get_job_by_id(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Mark applied in discovery DB
+    mark_applied(job_id)
+
+    # Push to main tracker (Google Sheets via backend /jobs endpoint)
+    tracked = False
+    try:
+        from src.config import get_settings
+        import httpx
+
+        settings = get_settings()
+        resp = httpx.post(
+            f"{settings.backend_url}/jobs",
+            json={
+                "company": job.get("company", "Unknown"),
+                "role": job["title"],
+                "source": f"Discovery ({job.get('source_name', '')})",
+                "job_url": job["url"],
+                "status": "Applied",
+                "notes": f"[Discovery] Score: {job.get('match_score', 0):.2f} | {job.get('category', '')}",
+            },
+            timeout=10.0,
+        )
+        if resp.status_code == 201:
+            mark_tracked(job_id)
+            tracked = True
+    except Exception:
+        pass  # Tracker push is best-effort
+
+    return {
+        "ok": True,
+        "id": job_id,
+        "url": job["url"],
+        "tracked": tracked,
+        "title": job["title"],
+        "company": job.get("company", ""),
+    }
 
 
 @router.post("/parse")

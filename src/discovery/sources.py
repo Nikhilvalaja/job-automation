@@ -1,10 +1,10 @@
 """Job discovery sources — RSS feeds, public APIs, and career page monitors.
 
-200+ sources covering:
-- 6 public job board APIs (no key needed)
-- 100+ Greenhouse-hosted company career feeds
-- 50+ Lever-hosted company career feeds
-- 20+ Ashby-hosted company career feeds
+260+ sources covering:
+- 14 public job board APIs & RSS feeds (no key needed)
+- 150+ Greenhouse-hosted company career feeds
+- 65+ Lever-hosted company career feeds
+- 30+ Ashby-hosted company career feeds
 - Big Tech career RSS feeds
 
 All sources are ToS-compliant:
@@ -75,6 +75,30 @@ JOB_BOARD_SOURCES = [
               url_template="https://jobicy.com/api/v2/remote-jobs?count=50&tag={query}", parser="jobicy"),
     JobSource(name="FindWork", source_type=SourceType.API,
               url_template="https://findwork.dev/api/jobs/?search={query}&sort_by=relevance", parser="findwork"),
+    # Additional job board feeds
+    JobSource(name="We Work Remotely", source_type=SourceType.RSS,
+              url_template="https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss",
+              rate_limit_seconds=2.0),
+    JobSource(name="We Work Remotely (Full-Stack)", source_type=SourceType.RSS,
+              url_template="https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss",
+              rate_limit_seconds=2.0),
+    JobSource(name="We Work Remotely (Front-End)", source_type=SourceType.RSS,
+              url_template="https://weworkremotely.com/categories/remote-front-end-programming-jobs.rss",
+              rate_limit_seconds=2.0),
+    JobSource(name="We Work Remotely (DevOps)", source_type=SourceType.RSS,
+              url_template="https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss",
+              rate_limit_seconds=2.0),
+    JobSource(name="We Work Remotely (Data)", source_type=SourceType.RSS,
+              url_template="https://weworkremotely.com/categories/remote-data-jobs.rss",
+              rate_limit_seconds=2.0),
+    JobSource(name="BuiltIn", source_type=SourceType.RSS,
+              url_template="https://builtin.com/jobs/remote/dev-engineering/entry-level/mid-level/senior/rss",
+              rate_limit_seconds=3.0),
+    JobSource(name="BuiltIn (Data Science)", source_type=SourceType.RSS,
+              url_template="https://builtin.com/jobs/remote/data-analytics/entry-level/mid-level/senior/rss",
+              rate_limit_seconds=3.0),
+    JobSource(name="Himalayas", source_type=SourceType.API,
+              url_template="https://himalayas.app/jobs/api?limit=50", parser="himalayas"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -110,6 +134,13 @@ GREENHOUSE_FEEDS = [
     _gh("Runway", "runwayml"),
     _gh("Jasper AI", "jasper"),
     _gh("Weights & Biases", "wandb"),
+    _gh("Together AI", "togetherai"),
+    _gh("Cerebras", "cerebras"),
+    _gh("Shield AI", "shieldai"),
+    _gh("Covariant", "covariant"),
+    _gh("Wayve", "wayve"),
+    _gh("DeepL", "deepl"),
+    _gh("Turing", "turing"),
 
     # Fintech / Payments
     _gh("Stripe", "stripe"),
@@ -125,6 +156,20 @@ GREENHOUSE_FEEDS = [
     _gh("Anchorage Digital", "anchoragedigital"),
     _gh("Circle", "circle"),
     _gh("Ripple", "ripple"),
+    _gh("Uniswap Labs", "uniswaplabs"),
+    _gh("Chainalysis", "chainalysis"),
+    _gh("Alchemy", "alchemy"),
+
+    # Quantitative Finance / Trading
+    _gh("Two Sigma", "twosigma"),
+    _gh("Citadel", "citadel"),
+    _gh("Jane Street", "janestreet"),
+    _gh("Point72", "point72"),
+    _gh("D.E. Shaw", "deshaw"),
+    _gh("Jump Trading", "jumptrading"),
+    _gh("Hudson River Trading", "hudsonrivertrading"),
+    _gh("Bridgewater Associates", "bridgewater"),
+    _gh("AQR Capital", "aqr"),
 
     # Developer Tools / Infra
     _gh("Vercel", "vercel"),
@@ -149,6 +194,11 @@ GREENHOUSE_FEEDS = [
     _gh("Kong", "kong"),
     _gh("PostHog", "posthog"),
     _gh("Sentry", "sentry"),
+    _gh("DigitalOcean", "digitalocean"),
+    _gh("MongoDB", "mongodb"),
+    _gh("CockroachDB", "cockroachlabs"),
+    _gh("Prisma", "prisma"),
+    _gh("Temporal Technologies", "temporaltechnologies"),
 
     # SaaS / Enterprise
     _gh("Twilio", "twilio"),
@@ -170,6 +220,11 @@ GREENHOUSE_FEEDS = [
     _gh("Lattice", "lattice"),
     _gh("Dbt Labs", "dbtlabs"),
     _gh("Fivetran", "fivetran"),
+    _gh("Asana", "asana"),
+    _gh("Monday.com", "mondaycom"),
+    _gh("Freshworks", "freshworks"),
+    _gh("ServiceNow", "servicenow"),
+    _gh("Workday", "workday"),
 
     # Social / Consumer
     _gh("Discord", "discord"),
@@ -180,6 +235,8 @@ GREENHOUSE_FEEDS = [
     _gh("Calm", "calm"),
     _gh("Strava", "strava"),
     _gh("AllTrails", "alltrails"),
+    _gh("Nextdoor", "nextdoor"),
+    _gh("BeReal", "bereal"),
 
     # Security / Cyber
     _gh("CrowdStrike", "crowdstrike"),
@@ -187,6 +244,9 @@ GREENHOUSE_FEEDS = [
     _gh("Palo Alto Networks", "paloaltonetworks"),
     _gh("Okta", "okta"),
     _gh("Wiz", "wiz"),
+    _gh("Lacework", "lacework"),
+    _gh("Trellix", "trellix"),
+    _gh("Recorded Future", "recordedfuture"),
 
     # Health / Bio
     _gh("Tempus", "tempus"),
@@ -194,6 +254,11 @@ GREENHOUSE_FEEDS = [
     _gh("Hims & Hers", "himsandhers"),
     _gh("Color Health", "color"),
     _gh("Noom", "noom"),
+    _gh("Oscar Health", "oscarhealth"),
+    _gh("Flatiron Health", "flatironhealth"),
+    _gh("Devoted Health", "devotedhealth"),
+    _gh("Cityblock Health", "cityblockhealth"),
+    _gh("Veeva Systems", "veeva"),
 
     # E-commerce / Marketplace
     _gh("Instacart", "instacart"),
@@ -202,6 +267,13 @@ GREENHOUSE_FEEDS = [
     _gh("Etsy", "etsy"),
     _gh("Gopuff", "gopuff"),
     _gh("Chewy", "chewy"),
+    _gh("Shopify", "shopify"),
+    _gh("StockX", "stockx"),
+    _gh("Poshmark", "poshmark"),
+    _gh("Zillow", "zillow"),
+    _gh("Redfin", "redfin"),
+    _gh("Compass Real Estate", "compass"),
+    _gh("Opendoor", "opendoor"),
 
     # Autonomous / Robotics / Hardware
     _gh("Cruise", "cruise"),
@@ -213,6 +285,11 @@ GREENHOUSE_FEEDS = [
     _gh("Anduril Industries", "andurilindustries"),
     _gh("SpaceX", "spacex"),
     _gh("Palantir", "palantir"),
+    _gh("Rivian", "rivian"),
+    _gh("Lucid Motors", "lucidmotors"),
+    _gh("Archer Aviation", "archeraviation"),
+    _gh("Skydio", "skydio"),
+    _gh("Boston Dynamics", "bostondynamics"),
 
     # Data / Analytics
     _gh("Snowflake", "snowflake"),
@@ -223,6 +300,39 @@ GREENHOUSE_FEEDS = [
     _gh("Census", "census"),
     _gh("Hightouch", "hightouch"),
     _gh("Airbyte", "airbyte"),
+    _gh("Confluent", "confluent"),
+    _gh("Starburst", "starburst"),
+    _gh("dbt Labs (GH)", "dbtlabsinc"),
+    _gh("Immuta", "immuta"),
+
+    # Gaming / Entertainment
+    _gh("Riot Games", "riotgames"),
+    _gh("Epic Games", "epicgames"),
+    _gh("Roblox", "roblox"),
+    _gh("Unity", "unity"),
+    _gh("Niantic", "niantic"),
+    _gh("Supercell", "supercell"),
+    _gh("King", "king"),
+
+    # Education
+    _gh("Coursera", "coursera"),
+    _gh("Khan Academy", "khanacademy"),
+    _gh("Chegg", "chegg"),
+    _gh("Clever", "clever"),
+    _gh("Instructure", "instructure"),
+
+    # Transportation / Logistics
+    _gh("Lyft", "lyft"),
+    _gh("Uber", "uber"),
+    _gh("Waymo", "waymo"),
+    _gh("Flexport (GH)", "flexport"),
+    _gh("Convoy", "convoy"),
+
+    # Consulting / Professional Services
+    _gh("McKinsey Digital", "mckinseydigital"),
+    _gh("BCG X", "bcgx"),
+    _gh("Slalom", "slalom"),
+    _gh("ThoughtWorks", "thoughtworks"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -276,6 +386,29 @@ LEVER_FEEDS = [
     _lever("Tome", "tome"),
     _lever("Perplexity", "perplexity"),
     _lever("Cursor", "anysphere"),
+
+    # Additional Lever companies
+    _lever("Deel", "deel"),
+    _lever("Remote.com", "remote"),
+    _lever("Notion (Lever)", "notionhq"),
+    _lever("Figma (Lever)", "figma"),
+    _lever("Airtable (Lever)", "airtable"),
+    _lever("Lemonade", "lemonade"),
+    _lever("Chili Piper", "chilipiper"),
+    _lever("Drata", "drata"),
+    _lever("Gong", "gong"),
+    _lever("Outreach", "outreach"),
+    _lever("UserTesting", "usertesting"),
+    _lever("LaunchDarkly (Lever)", "launchdarkly"),
+    _lever("Cockroach Labs (Lever)", "cockroach-labs"),
+    _lever("PagerDuty", "pagerduty"),
+    _lever("Grafana (Lever)", "grafana"),
+    _lever("Tailscale", "tailscale"),
+    _lever("Snorkel AI", "snorkelai"),
+    _lever("Anyscale", "anyscale"),
+    _lever("Weights & Biases V2", "wandbv2"),
+    _lever("Ironclad", "ironclad"),
+    _lever("Plaid (Lever)", "plaid"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -304,6 +437,18 @@ ASHBY_FEEDS = [
     _ashby("Knock", "knock"),
     _ashby("Plain", "plain"),
     _ashby("Stainless", "stainlessapi"),
+
+    # Additional Ashby companies
+    _ashby("Vercel (Ashby)", "vercel"),
+    _ashby("Supabase (Ashby)", "supabase"),
+    _ashby("Warp", "warp"),
+    _ashby("Fly.io (Ashby)", "fly"),
+    _ashby("Railway (Ashby)", "railway"),
+    _ashby("Dagster", "dagster"),
+    _ashby("Prefect", "prefect"),
+    _ashby("Metaplane", "metaplane"),
+    _ashby("Modal (Ashby)", "modal"),
+    _ashby("Baseten", "baseten"),
 ]
 
 # ---------------------------------------------------------------------------

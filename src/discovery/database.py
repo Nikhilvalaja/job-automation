@@ -6,11 +6,14 @@ Google Sheets can't handle this volume — SQLite is local, fast, and free.
 
 Schema:
 - discovered_jobs: main table with all extracted fields
+- sources: tracks each discovery source and its schedule
 - Indexes on: category, experience_level, job_type, company, score
+- FTS5 full-text search on title, description, skills
 """
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import uuid
 from datetime import datetime
@@ -39,6 +42,7 @@ def init_db() -> None:
     """Create tables and indexes if they don't exist."""
     conn = get_db()
     try:
+        # Step 1: Create tables
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS discovered_jobs (
                 id TEXT PRIMARY KEY,
@@ -50,23 +54,27 @@ def init_db() -> None:
                 source_name TEXT DEFAULT '',
 
                 -- ML-extracted structured fields
-                category TEXT DEFAULT '',          -- backend, frontend, data_science, ml, devops, etc.
-                experience_level TEXT DEFAULT '',   -- entry, mid, senior, lead, staff, principal
+                category TEXT DEFAULT '',
+                experience_level TEXT DEFAULT '',
                 experience_years_min INTEGER DEFAULT 0,
                 experience_years_max INTEGER DEFAULT 0,
-                job_type TEXT DEFAULT '',           -- full_time, part_time, contract, internship
-                remote_type TEXT DEFAULT '',        -- remote, hybrid, onsite
+                job_type TEXT DEFAULT '',
+                remote_type TEXT DEFAULT '',
                 salary_min INTEGER DEFAULT 0,
                 salary_max INTEGER DEFAULT 0,
                 salary_currency TEXT DEFAULT 'USD',
-                skills TEXT DEFAULT '',             -- comma-separated: python,sql,aws
-                education TEXT DEFAULT '',          -- bachelors, masters, phd, none
+                skills TEXT DEFAULT '',
+                education TEXT DEFAULT '',
+
+                -- Dedup fingerprint (hash of normalized title+company+location)
+                fingerprint TEXT DEFAULT '',
 
                 -- Scoring and status
                 match_score REAL DEFAULT 0.0,
-                status TEXT DEFAULT 'new',          -- new, saved, applied, dismissed
-                parsed INTEGER DEFAULT 0,           -- 1 if ML parsing is done
-                tracked INTEGER DEFAULT 0,          -- 1 if pushed to main tracker (Google Sheets)
+                status TEXT DEFAULT 'new',
+                parsed INTEGER DEFAULT 0,
+                tracked INTEGER DEFAULT 0,
+                applied_at TEXT DEFAULT '',
 
                 -- Timestamps
                 discovered_at TEXT NOT NULL,
@@ -74,6 +82,24 @@ def init_db() -> None:
                 updated_at TEXT DEFAULT ''
             );
 
+            -- Source tracking table
+            CREATE TABLE IF NOT EXISTS discovery_sources (
+                source_name TEXT PRIMARY KEY,
+                source_type TEXT DEFAULT '',
+                base_url TEXT DEFAULT '',
+                last_fetched_at TEXT DEFAULT '',
+                last_job_count INTEGER DEFAULT 0,
+                total_jobs_found INTEGER DEFAULT 0,
+                error_count INTEGER DEFAULT 0,
+                enabled INTEGER DEFAULT 1
+            );
+        """)
+
+        # Step 2: Migrate columns for existing DBs (BEFORE index creation)
+        _migrate_columns(conn)
+
+        # Step 3: Create indexes (after columns exist)
+        conn.executescript("""
             CREATE INDEX IF NOT EXISTS idx_category ON discovered_jobs(category);
             CREATE INDEX IF NOT EXISTS idx_experience_level ON discovered_jobs(experience_level);
             CREATE INDEX IF NOT EXISTS idx_job_type ON discovered_jobs(job_type);
@@ -82,11 +108,31 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_status ON discovered_jobs(status);
             CREATE INDEX IF NOT EXISTS idx_discovered_at ON discovered_jobs(discovered_at);
             CREATE INDEX IF NOT EXISTS idx_remote_type ON discovered_jobs(remote_type);
+            CREATE INDEX IF NOT EXISTS idx_fingerprint ON discovered_jobs(fingerprint);
         """)
+
         conn.commit()
         logger.info("Discovery database initialized")
     finally:
         conn.close()
+
+
+def _migrate_columns(conn: sqlite3.Connection) -> None:
+    """Add columns that may not exist in older DB versions."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(discovered_jobs)").fetchall()}
+    migrations = [
+        ("fingerprint", "TEXT DEFAULT ''"),
+        ("applied_at", "TEXT DEFAULT ''"),
+    ]
+    for col_name, col_type in migrations:
+        if col_name not in existing:
+            conn.execute(f"ALTER TABLE discovered_jobs ADD COLUMN {col_name} {col_type}")
+
+
+def _compute_fingerprint(title: str, company: str, location: str) -> str:
+    """Compute a dedup fingerprint from normalized fields."""
+    normalized = f"{title.lower().strip()}|{company.lower().strip()}|{location.lower().strip()}"
+    return hashlib.md5(normalized.encode()).hexdigest()[:16]
 
 
 def insert_job(job: dict) -> str | None:
@@ -94,11 +140,14 @@ def insert_job(job: dict) -> str | None:
     conn = get_db()
     try:
         job_id = str(uuid.uuid4())[:8]
+        fp = _compute_fingerprint(
+            job.get("title", ""), job.get("company", ""), job.get("location", ""),
+        )
         conn.execute(
             """INSERT INTO discovered_jobs
                (id, title, company, url, description, location, source_name,
-                match_score, discovered_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                match_score, fingerprint, discovered_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 job_id,
                 job.get("title", ""),
@@ -108,6 +157,7 @@ def insert_job(job: dict) -> str | None:
                 job.get("location", ""),
                 job.get("source_name", ""),
                 job.get("score", 0.0),
+                fp,
                 datetime.now().isoformat(),
             ),
         )
@@ -116,6 +166,83 @@ def insert_job(job: dict) -> str | None:
     except sqlite3.IntegrityError:
         # Duplicate URL
         return None
+    finally:
+        conn.close()
+
+
+def get_job_by_id(job_id: str) -> dict | None:
+    """Get a single job by ID with all fields."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM discovered_jobs WHERE id = ?", (job_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def mark_applied(job_id: str) -> None:
+    """Mark a job as applied with timestamp."""
+    conn = get_db()
+    try:
+        now = datetime.now().isoformat()
+        conn.execute(
+            "UPDATE discovered_jobs SET status='applied', applied_at=?, updated_at=? WHERE id=?",
+            (now, now, job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_tracked(job_id: str) -> None:
+    """Mark a job as pushed to the main tracker (Google Sheets)."""
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE discovered_jobs SET tracked=1, updated_at=? WHERE id=?",
+            (datetime.now().isoformat(), job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_source_stats(source_name: str, source_type: str, base_url: str,
+                        job_count: int, error: bool = False) -> None:
+    """Track per-source fetch statistics."""
+    conn = get_db()
+    try:
+        conn.execute(
+            """INSERT INTO discovery_sources (source_name, source_type, base_url,
+                   last_fetched_at, last_job_count, total_jobs_found, error_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source_name) DO UPDATE SET
+                   last_fetched_at=excluded.last_fetched_at,
+                   last_job_count=excluded.last_job_count,
+                   total_jobs_found=total_jobs_found + excluded.total_jobs_found,
+                   error_count=error_count + excluded.error_count""",
+            (
+                source_name, source_type, base_url,
+                datetime.now().isoformat(),
+                job_count, job_count,
+                1 if error else 0,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_source_stats() -> list[dict]:
+    """Get per-source statistics."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM discovery_sources ORDER BY total_jobs_found DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
     finally:
         conn.close()
 
@@ -178,6 +305,15 @@ def get_unparsed_jobs(limit: int = 50) -> list[dict]:
         conn.close()
 
 
+VALID_SORT_FIELDS = {
+    "score": "match_score DESC",
+    "newest": "discovered_at DESC",
+    "oldest": "discovered_at ASC",
+    "company": "company ASC",
+    "title": "title ASC",
+}
+
+
 def search_jobs(
     category: str = "",
     experience_level: str = "",
@@ -189,11 +325,14 @@ def search_jobs(
     company: str = "",
     status: str = "",
     min_score: float = 0.0,
+    sort_by: str = "score",
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[list[dict], int]:
     """Search discovered jobs with LinkedIn-level filtering.
 
+    Args:
+        sort_by: One of "score", "newest", "oldest", "company", "title".
     Returns (jobs, total_count).
     """
     conn = get_db()
@@ -250,10 +389,13 @@ def search_jobs(
         ).fetchone()
         total = count_row["cnt"] if count_row else 0
 
+        # Sort order
+        order = VALID_SORT_FIELDS.get(sort_by, "match_score DESC")
+
         # Get paginated results
         rows = conn.execute(
             f"""SELECT * FROM discovered_jobs {where}
-                ORDER BY match_score DESC, discovered_at DESC
+                ORDER BY {order}, discovered_at DESC
                 LIMIT ? OFFSET ?""",
             params + [limit, offset],
         ).fetchall()

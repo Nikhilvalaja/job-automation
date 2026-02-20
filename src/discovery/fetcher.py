@@ -205,6 +205,21 @@ def _parse_hackernews(data: dict, source_name: str) -> list[dict]:
     return []
 
 
+def _parse_himalayas(data: dict, source_name: str) -> list[dict]:
+    """Parse Himalayas API response."""
+    jobs = []
+    for item in data.get("jobs", [])[:50]:
+        jobs.append({
+            "title": item.get("title", ""),
+            "company": item.get("companyName", ""),
+            "url": item.get("applicationLink", "") or f"https://himalayas.app/jobs/{item.get('slug', '')}",
+            "description": _clean_html(item.get("description", "")),
+            "location": item.get("location", ""),
+            "source_name": source_name,
+        })
+    return jobs
+
+
 def _parse_default(data: list | dict, source_name: str) -> list[dict]:
     """Fallback parser for unknown API formats."""
     logger.warning(f"No parser for {source_name}, skipping")
@@ -217,6 +232,7 @@ API_PARSERS = {
     "jobicy": _parse_jobicy,
     "findwork": _parse_findwork,
     "hackernews": _parse_hackernews,
+    "himalayas": _parse_himalayas,
     "default": _parse_default,
 }
 

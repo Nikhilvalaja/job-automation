@@ -26,6 +26,7 @@ from src.discovery.sources import (
 )
 from src.discovery.fetcher import _clean_html
 from src.discovery.parser import JobParser, _detect_category, _detect_level, _detect_years_min
+from src.discovery.database import _compute_fingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -101,18 +102,21 @@ class TestSources:
         for source in ALL_SOURCES:
             assert source.source_type in (SourceType.RSS, SourceType.API, SourceType.CAREER_RSS)
 
-    def test_total_sources_over_180(self):
-        """Should have 180+ total sources."""
-        assert len(ALL_SOURCES) >= 180
+    def test_total_sources_over_250(self):
+        """Should have 250+ total sources."""
+        assert len(ALL_SOURCES) >= 250
 
-    def test_greenhouse_feeds_over_100(self):
-        assert len(GREENHOUSE_FEEDS) >= 100
+    def test_greenhouse_feeds_over_150(self):
+        assert len(GREENHOUSE_FEEDS) >= 150
 
-    def test_lever_feeds_over_40(self):
-        assert len(LEVER_FEEDS) >= 40
+    def test_lever_feeds_over_60(self):
+        assert len(LEVER_FEEDS) >= 60
 
-    def test_ashby_feeds_over_15(self):
-        assert len(ASHBY_FEEDS) >= 15
+    def test_ashby_feeds_over_25(self):
+        assert len(ASHBY_FEEDS) >= 25
+
+    def test_job_boards_over_10(self):
+        assert len(JOB_BOARD_SOURCES) >= 10
 
     def test_get_enabled_sources_filter(self):
         sources = get_enabled_sources(["indeed"])
@@ -212,6 +216,25 @@ class TestKeywordParser:
         assert result["job_type"] == "full_time"
 
 
+class TestFingerprint:
+    """Test the dedup fingerprint system."""
+
+    def test_same_job_same_fingerprint(self):
+        fp1 = _compute_fingerprint("Software Engineer", "Google", "Remote")
+        fp2 = _compute_fingerprint("Software Engineer", "Google", "Remote")
+        assert fp1 == fp2
+
+    def test_case_insensitive(self):
+        fp1 = _compute_fingerprint("Software Engineer", "Google", "Remote")
+        fp2 = _compute_fingerprint("software engineer", "google", "remote")
+        assert fp1 == fp2
+
+    def test_different_jobs_different_fingerprint(self):
+        fp1 = _compute_fingerprint("Software Engineer", "Google", "Remote")
+        fp2 = _compute_fingerprint("Data Scientist", "Meta", "NYC")
+        assert fp1 != fp2
+
+
 # ---------------------------------------------------------------------------
 # Database Tests
 # ---------------------------------------------------------------------------
@@ -274,6 +297,61 @@ class TestDiscoveryDatabase:
 
             stats = get_stats()
             assert stats["total"] == 2
+
+    def test_get_job_by_id(self, tmp_path):
+        """Should retrieve a job by ID."""
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, get_job_by_id
+            init_db()
+            job_id = insert_job({"title": "SWE", "url": "https://a.com/1", "company": "Google"})
+            job = get_job_by_id(job_id)
+            assert job is not None
+            assert job["title"] == "SWE"
+            assert job["company"] == "Google"
+            assert get_job_by_id("nonexistent") is None
+
+    def test_mark_applied(self, tmp_path):
+        """Should mark job as applied with timestamp."""
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, mark_applied, get_job_by_id
+            init_db()
+            job_id = insert_job({"title": "SWE", "url": "https://a.com/1", "company": "A"})
+            mark_applied(job_id)
+            job = get_job_by_id(job_id)
+            assert job["status"] == "applied"
+            assert job["applied_at"] != ""
+
+    def test_sort_by_newest(self, tmp_path):
+        """Should sort by newest first."""
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, search_jobs
+            init_db()
+            insert_job({"title": "Job1", "url": "https://a.com/1", "company": "A"})
+            insert_job({"title": "Job2", "url": "https://b.com/2", "company": "B"})
+            jobs, total = search_jobs(sort_by="newest")
+            assert total == 2
+            # Newest first means Job2 should come first
+            assert jobs[0]["title"] == "Job2"
+
+    def test_fingerprint_computed(self, tmp_path):
+        """Inserted jobs should have a fingerprint."""
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, get_job_by_id
+            init_db()
+            job_id = insert_job({"title": "SWE", "url": "https://a.com/1", "company": "Google", "location": "Remote"})
+            job = get_job_by_id(job_id)
+            assert job["fingerprint"] != ""
+
+    def test_source_stats_tracking(self, tmp_path):
+        """Should track per-source statistics."""
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, update_source_stats, get_source_stats
+            init_db()
+            update_source_stats("TestSource", "api", "http://test.com", 10)
+            stats = get_source_stats()
+            assert len(stats) == 1
+            assert stats[0]["source_name"] == "TestSource"
+            assert stats[0]["total_jobs_found"] == 10
 
 
 # ---------------------------------------------------------------------------

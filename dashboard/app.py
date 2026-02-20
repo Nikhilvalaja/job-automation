@@ -422,7 +422,7 @@ def render_bot_controls():
         },
         {
             "name": "Discovery Bot",
-            "desc": f"Scans {30}+ job sources (RSS feeds, APIs, career pages) every {settings.discovery_bot_interval_minutes} min",
+            "desc": f"Scans 260+ job sources (RSS feeds, APIs, career pages) every {settings.discovery_bot_interval_minutes} min",
             "schedule": f"Every {settings.discovery_bot_interval_minutes} minutes",
             "command": "python -m bots.discovery_bot.run",
             "dry_run": "python -m bots.discovery_bot.run --dry-run",
@@ -748,11 +748,11 @@ def render_resume_tailor(df: pd.DataFrame, backend_url: str):
 
 # --- Job Discovery ---
 def render_discovery(backend_url: str):
-    """Render job discovery browser with LinkedIn-level filtering."""
+    """Render job discovery browser with LinkedIn-level filtering, sorting, and apply tracking."""
     st.subheader("Job Discovery")
-    st.caption("Browse 1000s of jobs discovered from 200+ sources. Filter like LinkedIn.")
+    st.caption("Browse 1000s of jobs discovered from 260+ sources. Filter, sort, and apply.")
 
-    # Filters row
+    # Filters row 1
     f1, f2, f3, f4, f5 = st.columns(5)
     with f1:
         category = st.selectbox("Role Category", [
@@ -776,8 +776,8 @@ def render_discovery(backend_url: str):
             "", "remote", "hybrid", "onsite",
         ], format_func=lambda x: "All" if x == "" else x.title())
 
-    # Second filter row
-    f6, f7, f8 = st.columns([2, 2, 1])
+    # Filters row 2: keyword, company, status, sort
+    f6, f7, f8, f9 = st.columns([2, 2, 1, 1])
     with f6:
         keyword = st.text_input("Keyword Search", placeholder="python, machine learning, AWS...")
     with f7:
@@ -785,6 +785,13 @@ def render_discovery(backend_url: str):
     with f8:
         status_filter = st.selectbox("Status", ["", "new", "saved", "applied", "dismissed"],
                                       format_func=lambda x: "All" if x == "" else x.title())
+    with f9:
+        sort_by = st.selectbox("Sort By", ["score", "newest", "oldest", "company", "title"],
+                                format_func=lambda x: {
+                                    "score": "Best Match", "newest": "Newest First",
+                                    "oldest": "Oldest First", "company": "Company A-Z",
+                                    "title": "Title A-Z",
+                                }.get(x, x))
 
     # Fetch from discovery API
     try:
@@ -793,7 +800,7 @@ def render_discovery(backend_url: str):
             "years_min": years_range[0], "years_max": years_range[1],
             "job_type": job_type, "remote_type": remote,
             "keyword": keyword, "company": company_filter,
-            "status": status_filter, "per_page": 100,
+            "status": status_filter, "sort_by": sort_by, "per_page": 100,
         }
         params = {k: v for k, v in params.items() if v}  # Remove empty
         resp = httpx.get(f"{backend_url}/discovery/jobs", params=params, timeout=10.0)
@@ -807,8 +814,10 @@ def render_discovery(backend_url: str):
 
             if disc_jobs:
                 disc_df = pd.DataFrame(disc_jobs)
-                display_cols = ["title", "company", "category", "experience_level",
-                                "job_type", "remote_type", "match_score", "skills", "status"]
+
+                # Main table with clickable URLs
+                display_cols = ["title", "company", "url", "category", "experience_level",
+                                "remote_type", "match_score", "skills", "status"]
                 available = [c for c in display_cols if c in disc_df.columns]
 
                 st.dataframe(
@@ -818,9 +827,9 @@ def render_discovery(backend_url: str):
                     column_config={
                         "title": st.column_config.TextColumn("Role", width="large"),
                         "company": st.column_config.TextColumn("Company", width="medium"),
+                        "url": st.column_config.LinkColumn("Apply Link", display_text="Open", width="small"),
                         "category": st.column_config.TextColumn("Category", width="small"),
                         "experience_level": st.column_config.TextColumn("Level", width="small"),
-                        "job_type": st.column_config.TextColumn("Type", width="small"),
                         "remote_type": st.column_config.TextColumn("Remote", width="small"),
                         "match_score": st.column_config.NumberColumn("Score", format="%.2f", width="small"),
                         "skills": st.column_config.TextColumn("Skills", width="large"),
@@ -828,28 +837,37 @@ def render_discovery(backend_url: str):
                     },
                 )
 
-                # Quick actions
+                # --- Job Details + Apply Section ---
                 st.divider()
-                act_cols = st.columns(4)
-                with act_cols[0]:
-                    job_ids = disc_df["id"].tolist() if "id" in disc_df.columns else []
-                    selected = st.selectbox("Select Job", job_ids, index=None, placeholder="Pick a job...", key="disc_sel")
-                with act_cols[1]:
-                    action = st.selectbox("Action", ["saved", "applied", "dismissed"], key="disc_action")
-                with act_cols[2]:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    if st.button("Update", key="disc_update") and selected:
-                        try:
-                            r = httpx.patch(f"{backend_url}/discovery/jobs/{selected}",
-                                           json={"status": action}, timeout=10.0)
-                            if r.status_code == 200:
-                                st.success(f"Updated {selected} to {action}")
-                                st.rerun()
-                        except Exception as e:
-                            st.error(str(e))
-                with act_cols[3]:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    if st.button("Parse Unparsed Jobs", key="disc_parse"):
+                st.subheader("Job Actions")
+
+                # Build readable job labels for the selector
+                job_labels = {}
+                if "id" in disc_df.columns:
+                    for _, row in disc_df.iterrows():
+                        label = f"{row.get('title', '?')} @ {row.get('company', '?')} [{row['id']}]"
+                        job_labels[label] = row["id"]
+
+                sel_col, act_col, parse_col = st.columns([3, 2, 1])
+                with sel_col:
+                    selected_label = st.selectbox(
+                        "Select Job", list(job_labels.keys()),
+                        index=None, placeholder="Pick a job to view details or apply...",
+                        key="disc_sel",
+                    )
+                    selected = job_labels.get(selected_label) if selected_label else None
+
+                with act_col:
+                    btn_cols = st.columns(3)
+                    with btn_cols[0]:
+                        save_btn = st.button("Save", key="disc_save", disabled=not selected)
+                    with btn_cols[1]:
+                        apply_btn = st.button("Apply", key="disc_apply", type="primary", disabled=not selected)
+                    with btn_cols[2]:
+                        dismiss_btn = st.button("Dismiss", key="disc_dismiss", disabled=not selected)
+
+                with parse_col:
+                    if st.button("Parse Unparsed", key="disc_parse"):
                         try:
                             r = httpx.post(f"{backend_url}/discovery/parse?limit=50", timeout=30.0)
                             if r.status_code == 200:
@@ -857,12 +875,81 @@ def render_discovery(backend_url: str):
                                 st.rerun()
                         except Exception as e:
                             st.error(str(e))
+
+                # Handle button actions
+                if selected and save_btn:
+                    try:
+                        r = httpx.patch(f"{backend_url}/discovery/jobs/{selected}",
+                                       json={"status": "saved"}, timeout=10.0)
+                        if r.status_code == 200:
+                            st.success("Saved!")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
+                if selected and apply_btn:
+                    try:
+                        r = httpx.post(f"{backend_url}/discovery/jobs/{selected}/apply", timeout=10.0)
+                        if r.status_code == 200:
+                            result = r.json()
+                            job_url = result.get("url", "")
+                            tracked = result.get("tracked", False)
+                            st.success(
+                                f"Applied to {result.get('title', '')} at {result.get('company', '')}! "
+                                f"{'Also added to tracker.' if tracked else ''}"
+                            )
+                            if job_url:
+                                st.markdown(f"**[Open Application Page]({job_url})**")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
+                if selected and dismiss_btn:
+                    try:
+                        r = httpx.patch(f"{backend_url}/discovery/jobs/{selected}",
+                                       json={"status": "dismissed"}, timeout=10.0)
+                        if r.status_code == 200:
+                            st.success("Dismissed.")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
+                # Show job details when selected
+                if selected:
+                    try:
+                        detail_resp = httpx.get(f"{backend_url}/discovery/jobs/{selected}", timeout=5.0)
+                        if detail_resp.status_code == 200:
+                            job = detail_resp.json()
+                            st.divider()
+                            st.subheader(f"{job.get('title', '')} — {job.get('company', '')}")
+                            detail_cols = st.columns(4)
+                            detail_cols[0].markdown(f"**Category:** {job.get('category', 'N/A').replace('_', ' ').title()}")
+                            detail_cols[1].markdown(f"**Level:** {job.get('experience_level', 'N/A').title()}")
+                            detail_cols[2].markdown(f"**Type:** {job.get('job_type', 'N/A').replace('_', ' ').title()}")
+                            detail_cols[3].markdown(f"**Remote:** {job.get('remote_type', 'N/A').title()}")
+
+                            info_cols = st.columns(4)
+                            info_cols[0].markdown(f"**Score:** {job.get('match_score', 0):.2f}")
+                            info_cols[1].markdown(f"**Location:** {job.get('location', 'N/A')}")
+                            info_cols[2].markdown(f"**Source:** {job.get('source_name', 'N/A')}")
+                            info_cols[3].markdown(f"**Status:** {job.get('status', 'new').title()}")
+
+                            if job.get("skills"):
+                                st.markdown(f"**Skills:** {job['skills']}")
+                            if job.get("url"):
+                                st.markdown(f"**Apply:** [{job['url']}]({job['url']})")
+                            if job.get("description"):
+                                with st.expander("Full Description", expanded=False):
+                                    st.write(job["description"][:3000])
+                    except Exception:
+                        pass
+
             else:
                 st.info("No discovered jobs match your filters. Run the Discovery Bot first.")
         else:
             st.warning(f"Discovery API returned {resp.status_code}")
 
-        # Stats sidebar
+        # Stats
         try:
             stats_resp = httpx.get(f"{backend_url}/discovery/stats", timeout=5.0)
             if stats_resp.status_code == 200:
