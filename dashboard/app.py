@@ -2544,6 +2544,164 @@ def render_my_resumes(backend_url: str):
         st.error(f"Error: {e}")
 
 
+# --- Today (Supervisor) ---
+def render_today(backend_url: str):
+    """Unified command center — Today's priority actions from all systems."""
+    st.subheader("Today's Actions")
+    st.caption("Priority-ranked actions from all systems — outreach, jobs, CRM, signals, referrals.")
+
+    # ----------------------------------------------------------------
+    # System stats header
+    # ----------------------------------------------------------------
+    try:
+        r = requests.get(f"{backend_url}/supervisor/stats", timeout=10)
+        stats = r.json() if r.ok else {}
+    except Exception:
+        stats = {}
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("To Apply", stats.get("to_apply", 0))
+    c2.metric("Applied", stats.get("applied", 0))
+    c3.metric("Interviewing", stats.get("interviewing", 0))
+    c4.metric("Hot Companies", stats.get("hot_companies", 0))
+    c5.metric("Pending Drafts", stats.get("outreach_pending_drafts", 0))
+    c6.metric("CRM Contacts", stats.get("crm_contacts", 0))
+
+    st.divider()
+
+    # ----------------------------------------------------------------
+    # Today's actions
+    # ----------------------------------------------------------------
+    today_tab, funnel_tab, avoid_tab = st.tabs(["Priority Actions", "Pipeline Funnel", "Avoid List"])
+
+    with today_tab:
+        col_left, col_right = st.columns([3, 1])
+        with col_right:
+            max_actions = st.slider("Max actions", 5, 30, 15, key="today_max")
+            inc_jobs     = st.checkbox("Jobs",     True, key="inc_jobs")
+            inc_signals  = st.checkbox("Signals",  True, key="inc_signals")
+            inc_refs     = st.checkbox("Referrals",True, key="inc_refs")
+            if st.button("Refresh", key="today_refresh"):
+                st.rerun()
+
+        with col_left:
+            try:
+                r = requests.get(
+                    f"{backend_url}/supervisor/today",
+                    params={"max_total": max_actions, "include_jobs": inc_jobs,
+                            "include_signals": inc_signals, "include_referrals": inc_refs},
+                    timeout=15,
+                )
+                actions = r.json().get("actions", []) if r.ok else []
+            except Exception:
+                actions = []
+
+            if not actions:
+                st.info("No actions right now — everything is up to date!")
+            else:
+                # Color map per action type
+                _TYPE_COLOR = {
+                    "outreach_draft": "#7c3aed",
+                    "crm_reply":      "#059669",
+                    "crm_followup":   "#2563eb",
+                    "job_apply":      "#d97706",
+                    "signal_hot":     "#dc2626",
+                    "referral_path":  "#0891b2",
+                }
+                _TYPE_ICON = {
+                    "outreach_draft": "✉️",
+                    "crm_reply":      "💬",
+                    "crm_followup":   "🔁",
+                    "job_apply":      "🎯",
+                    "signal_hot":     "⚡",
+                    "referral_path":  "🤝",
+                }
+                for i, action in enumerate(actions):
+                    atype  = action.get("action_type", "")
+                    icon   = _TYPE_ICON.get(atype, "•")
+                    color  = _TYPE_COLOR.get(atype, "#6b7280")
+                    pct    = int(action.get("priority", 0) * 100)
+                    label  = action.get("action_label", "View")
+
+                    with st.container():
+                        cols = st.columns([0.05, 0.55, 0.20, 0.20])
+                        with cols[0]:
+                            st.markdown(f"<span style='font-size:1.4em'>{icon}</span>",
+                                        unsafe_allow_html=True)
+                        with cols[1]:
+                            st.markdown(
+                                f"**{action['title']}**  \n"
+                                f"<span style='color:{color};font-size:0.85em'>{action['description']}</span>",
+                                unsafe_allow_html=True,
+                            )
+                        with cols[2]:
+                            st.progress(pct, text=f"{pct}%")
+                        with cols[3]:
+                            btn_key = f"action_{i}_{atype}"
+                            if atype == "outreach_draft":
+                                draft_id = action.get("data", {}).get("draft_id")
+                                if draft_id and st.button(label, key=btn_key):
+                                    requests.post(f"{backend_url}/outreach/drafts/{draft_id}/approve", timeout=10)
+                                    st.success("Approved!")
+                                    st.rerun()
+                            elif atype == "job_apply":
+                                url = action.get("data", {}).get("url", "")
+                                if url:
+                                    st.markdown(f"[{label}]({url})")
+                                else:
+                                    st.write(label)
+                            else:
+                                st.write(f"_{action.get('source','')}_")
+                        st.markdown("---")
+
+    with funnel_tab:
+        st.markdown("#### Application Pipeline")
+        try:
+            r = requests.get(f"{backend_url}/supervisor/funnel", timeout=10)
+            funnel = r.json() if r.ok else {}
+        except Exception:
+            funnel = {}
+
+        if funnel:
+            stages = ["discovered", "to_apply", "applied", "interviewing", "offer"]
+            labels = ["Discovered", "To Apply", "Applied", "Interviewing", "Offer"]
+            values = [funnel.get(s, 0) for s in stages]
+            top = max(values) if values else 1
+            cols = st.columns(len(stages))
+            for col, label, val in zip(cols, labels, values):
+                col.metric(label, val)
+                col.progress(int(val / top * 100) if top > 0 else 0)
+
+            # Conversion rates
+            st.markdown("---")
+            st.markdown("**Conversion rates:**")
+            if funnel.get("discovered", 0) > 0:
+                d = funnel["discovered"]
+                apply_rate = funnel.get("to_apply", 0) / d
+                applied_rate = funnel.get("applied", 0) / d
+                interview_rate = funnel.get("applied", 1) and funnel.get("interviewing", 0) / max(funnel.get("applied", 1), 1)
+                st.write(f"Shortlisted: {apply_rate:.0%} | Applied: {applied_rate:.0%} | "
+                         f"Interview conversion: {interview_rate:.0%}")
+
+    with avoid_tab:
+        st.markdown("#### Companies to Avoid")
+        st.caption("Companies with layoff signals or low hiring score — deprioritize these.")
+        try:
+            r = requests.get(f"{backend_url}/supervisor/avoid?limit=20", timeout=10)
+            avoid = r.json().get("companies", []) if r.ok else []
+        except Exception:
+            avoid = []
+
+        if not avoid:
+            st.success("No layoff alerts — all tracked companies look healthy!")
+        else:
+            for co in avoid:
+                st.markdown(
+                    f"❌ **{co['company']}** — score {co.get('hiring_score',0):.0%} "
+                    f"({co.get('signal_count',0)} signals, {co.get('negative_signals',0)} negative)"
+                )
+
+
 # --- Main ---
 def main():
     backend_url = render_sidebar()
@@ -2570,12 +2728,15 @@ def main():
 
     st.title("JobPilot Dashboard")
 
-    # Main tabs — 13 tabs
-    (tab_overview, tab_disc, tab_table, tab_my_resumes,
+    # Main tabs — 14 tabs
+    (tab_today, tab_overview, tab_disc, tab_table, tab_my_resumes,
      tab_cover, tab_resume, tab_crm, tab_referral, tab_signals, tab_outreach, tab_bots, tab_rules, tab_sites) = st.tabs(
-        ["Overview", "Job Discovery", "Applications", "My Resumes",
+        ["Today ★", "Overview", "Job Discovery", "Applications", "My Resumes",
          "Cover Letter", "Resume Studio", "CRM", "Referral", "Signals", "Outreach", "Bot Controls", "Email Rules", "Sites & Sources"]
     )
+
+    with tab_today:
+        render_today(backend_url)
 
     with tab_overview:
         render_kpis(df)
