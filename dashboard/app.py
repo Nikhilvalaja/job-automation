@@ -1269,7 +1269,75 @@ def render_signals(backend_url: str):
     st.subheader("Hiring Signals")
     st.caption("Company hiring scores from public signals: funding, expansions, layoffs. Updated every 6 hours.")
 
-    sig_tab1, sig_tab2, sig_tab3 = st.tabs(["Company Scores", "Signal Feed", "Classify Text"])
+    sig_tab0, sig_tab1, sig_tab2, sig_tab3 = st.tabs(["Priority Jobs", "Company Scores", "Signal Feed", "Classify Text"])
+
+    # ---- Priority Jobs ----
+    with sig_tab0:
+        st.markdown("**Smart application filter** — jobs ranked by resume fit + company hiring signal + sector relevance + timing.")
+
+        pf1, pf2, pf3 = st.columns(3)
+        with pf1:
+            target_role = st.selectbox(
+                "Target Role",
+                ["backend", "data", "ml", "devops", "healthcare_tech", "fullstack"],
+                key="sig_target_role",
+            )
+        with pf2:
+            min_match = st.slider("Min resume match score", 0.0, 1.0, 0.60, 0.05, key="sig_min_match")
+        with pf3:
+            windows = st.multiselect(
+                "Hiring windows",
+                ["warm", "peak", "cooling", "unknown"],
+                default=["warm", "peak", "unknown"],
+                key="sig_windows",
+            )
+
+        if st.button("Get Priority Jobs", key="sig_priority_btn"):
+            try:
+                pr = requests.get(
+                    f"{backend_url}/signals/priority-filter",
+                    params={
+                        "target_role": target_role,
+                        "min_match_score": min_match,
+                        "hiring_windows": ",".join(windows),
+                        "exclude_layoff": True,
+                        "limit": 20,
+                    },
+                    timeout=15,
+                )
+                pr.raise_for_status()
+                priority_jobs = pr.json().get("priority_jobs", [])
+            except Exception as e:
+                st.error(f"Error: {e}")
+                priority_jobs = []
+
+            if not priority_jobs:
+                st.info("No priority jobs found. Make sure jobs are scored (run Discovery Bot) and signal data is populated.")
+            else:
+                st.success(f"Found {len(priority_jobs)} priority jobs")
+                _WINDOW_LABELS = {"warm": "🟡 Warm", "peak": "🟢 Peak", "cooling": "🔵 Cooling", "unknown": "⚪ Unknown"}
+                _TREND_ICONS = {"up": "↑", "down": "↓", "stable": "→"}
+                for job in priority_jobs:
+                    priority = job.get("priority_score", 0.0)
+                    match = job.get("relevance_score", 0.0)
+                    signal = job.get("signal_score", 0.5)
+                    window = job.get("hiring_window", "unknown")
+                    trend = job.get("signal_trend", "stable")
+                    company = job.get("company", "")
+                    title = job.get("title", "")
+                    url = job.get("url", "")
+                    sector_boost = job.get("sector_boost", 0.0)
+
+                    header = f"**{title}** @ {company} — Priority: {priority:.0%}"
+                    with st.expander(header, expanded=False):
+                        col_a, col_b, col_c, col_d = st.columns(4)
+                        col_a.metric("Resume Match", f"{match:.0%}")
+                        col_b.metric("Signal Score", f"{signal:.0%}")
+                        col_c.metric("Window", _WINDOW_LABELS.get(window, window))
+                        col_d.metric("Sector Boost", f"+{sector_boost:.0%}" if sector_boost > 0 else "0%")
+                        st.caption(f"Trend: {_TREND_ICONS.get(trend, '')} {trend} | Sector: {job.get('sector_boost', 0):.0%}")
+                        if url:
+                            st.markdown(f"[Open job posting →]({url})")
 
     # ---- Company Scores ----
     with sig_tab1:
@@ -1357,7 +1425,7 @@ def render_signals(backend_url: str):
             st.dataframe(df_all, use_container_width=True, hide_index=True, height=350)
 
     # ---- Signal Feed ----
-    with sig_tab2:
+    with sig_tab2:  # noqa: E501
         f1, f2 = st.columns(2)
         with f1:
             company_filter = st.text_input("Company", "", key="sig_company_filter")
@@ -1402,7 +1470,7 @@ def render_signals(backend_url: str):
                     st.caption(f"{text}  _{source}_")
 
     # ---- Classify Text ----
-    with sig_tab3:
+    with sig_tab3:  # noqa: E501
         st.markdown("Test the signal classifier on any news headline.")
         classify_text_input = st.text_area("Paste headline or news text", height=100, key="sig_classify_input")
         company_hint = st.text_input("Company name (optional)", key="sig_company_hint")

@@ -20,6 +20,11 @@ class ClassificationResult:
     matched_keywords: list[str]
     company: str            # extracted company name (best effort)
     amount: str             # funding/contract amount if found (e.g. "$200M")
+    sector_tags: list[str] = None   # detected sector tags (e.g. ["healthcare", "cloud"])
+
+    def __post_init__(self):
+        if self.sector_tags is None:
+            self.sector_tags = []
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +88,26 @@ _CLASSIFIERS = [
     ("product",     _PRODUCT_KW),
 ]
 
+# Sector tag detection — maps tag label → keywords
+_SECTOR_TAG_KEYWORDS: dict[str, list[str]] = {
+    "healthcare":       ["healthcare", "health tech", "ehr", "epic", "cerner", "hipaa",
+                         "clinical", "hospital", "telemedicine", "digital health", "patient"],
+    "cloud":            ["cloud", "aws", "gcp", "azure", "infrastructure", "kubernetes",
+                         "cloud migration", "cloud platform"],
+    "ai_ml":            ["artificial intelligence", "machine learning", "deep learning",
+                         "llm", "generative ai", "ai platform", "nlp", "foundation model"],
+    "data":             ["data platform", "data warehouse", "analytics", "databricks",
+                         "snowflake", "spark", "dbt", "etl", "data engineering"],
+    "fintech":          ["fintech", "payments", "banking", "financial services",
+                         "cryptocurrency", "blockchain", "trading", "insurance tech"],
+    "government":       ["federal", "dod", "pentagon", "government contract", "dhs",
+                         "fedramp", "usaf", "navy", "army", "usaid"],
+    "enterprise_saas":  ["saas", "enterprise software", "b2b", "crm", "erp",
+                         "developer tools", "platform engineering"],
+    "consumer":         ["consumer app", "mobile app", "social media", "e-commerce",
+                         "marketplace", "retail tech"],
+}
+
 
 # ---------------------------------------------------------------------------
 # Core classification
@@ -123,8 +148,13 @@ def classify_text(
     if amount and best_type in ("funding", "contract"):
         best_conf = min(0.95, best_conf + 0.10)
 
-    # Extract company name
-    company = company_hint or _extract_company(text)
+    # Extract company name (normalize it)
+    raw_company = company_hint or _extract_company(text)
+    from src.signals.normalizer import normalize_company
+    company = normalize_company(raw_company) if raw_company else ""
+
+    # Detect sector tags
+    sector_tags = _detect_sector_tags(lower)
 
     return ClassificationResult(
         signal_type=best_type,
@@ -132,7 +162,17 @@ def classify_text(
         matched_keywords=best_matches,
         company=company,
         amount=amount,
+        sector_tags=sector_tags,
     )
+
+
+def _detect_sector_tags(lower_text: str) -> list[str]:
+    """Return list of sector tags detected in text."""
+    tags = []
+    for tag, keywords in _SECTOR_TAG_KEYWORDS.items():
+        if any(kw in lower_text for kw in keywords):
+            tags.append(tag)
+    return tags
 
 
 def _extract_company(text: str) -> str:
@@ -181,6 +221,7 @@ def classify_feed_entries(
             "matched_keywords": r.matched_keywords,
             "company": r.company or company_hint,
             "amount": r.amount,
+            "sector_tags": r.sector_tags,
         })
     return results
 

@@ -35,6 +35,11 @@ class ClassifyRequest(BaseModel):
     company_hint: str = ""
 
 
+class EnrichRequest(BaseModel):
+    companies: list[str]
+    target_role: str = "backend"
+
+
 # ---------------------------------------------------------------------------
 # Sources
 # ---------------------------------------------------------------------------
@@ -159,4 +164,66 @@ def classify_text(req: ClassifyRequest):
         "matched_keywords": result.matched_keywords,
         "company": result.company,
         "amount": result.amount,
+        "sector_tags": result.sector_tags,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Priority filter
+# ---------------------------------------------------------------------------
+
+@router.get("/priority-filter")
+def get_priority_jobs(
+    target_role: str = Query("backend"),
+    min_match_score: float = Query(0.60, ge=0.0, le=1.0),
+    min_signal_score: float = Query(0.40, ge=0.0, le=1.0),
+    hiring_windows: str = Query("warm,peak,unknown"),
+    exclude_layoff: bool = Query(True),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Priority Application Filter — jobs ranked by match score + hiring signal.
+
+    Returns jobs where:
+    - resume match_score >= min_match_score
+    - company signal score is rising (not layoff)
+    - hiring_window is active (warm/peak)
+    - sector matches target role
+
+    priority_score = 0.50*match + 0.30*signal + 0.10*sector_boost + 0.10*window
+    """
+    from src.signals.scorer import get_priority_jobs as _get
+    windows = [w.strip() for w in hiring_windows.split(",") if w.strip()]
+    jobs = _get(
+        target_role=target_role,
+        min_match_score=min_match_score,
+        hiring_windows=windows,
+        min_signal_score=min_signal_score,
+        exclude_layoff=exclude_layoff,
+        limit=limit,
+    )
+    return {"priority_jobs": jobs, "count": len(jobs), "target_role": target_role}
+
+
+@router.post("/enrich")
+def enrich_companies(req: EnrichRequest):
+    """Enrich a list of companies with signal data for a target role."""
+    from src.signals.scorer import enrich_jobs_with_signals
+    return enrich_jobs_with_signals(req.companies, target_role=req.target_role)
+
+
+@router.get("/hiring-window/{company_name}")
+def get_hiring_window(company_name: str):
+    """Get current hiring window for a company."""
+    from src.signals.database import get_company_score
+    from src.signals.scorer import compute_hiring_window
+    score = get_company_score(company_name)
+    if not score:
+        return {"company": company_name, "hiring_window": "unknown", "last_funding_at": None}
+    window = compute_hiring_window(score.get("last_funding_at"))
+    return {
+        "company": company_name,
+        "canonical_name": score.get("canonical_name", company_name),
+        "hiring_window": window,
+        "last_funding_at": score.get("last_funding_at"),
+        "hiring_score": score.get("hiring_score", 0.5),
     }

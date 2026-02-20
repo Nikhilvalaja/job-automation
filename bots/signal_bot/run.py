@@ -136,6 +136,7 @@ def scan_sources(
                     source_url=entry.get("link", ""),
                     source_name=source.name,
                     confidence=conf,
+                    sector_tags=entry.get("sector_tags", []),
                     db_path=db_path,
                 )
                 stats["companies_updated"].add(company)

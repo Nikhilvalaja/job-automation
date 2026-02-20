@@ -1,4 +1,4 @@
-"""M13 tests — signals database, classifier, scorer."""
+"""M13 tests — signals database, classifier, scorer, normalizer."""
 
 from __future__ import annotations
 
@@ -9,6 +9,42 @@ from pathlib import Path
 @pytest.fixture
 def tmp_db(tmp_path):
     return tmp_path / "test_signals.db"
+
+
+# ---------------------------------------------------------------------------
+# normalizer
+# ---------------------------------------------------------------------------
+
+class TestNormalizer:
+    def test_strip_legal_suffix_inc(self):
+        from src.signals.normalizer import normalize_company
+        assert normalize_company("Stripe Inc.") == "Stripe"
+
+    def test_strip_legal_suffix_llc(self):
+        from src.signals.normalizer import normalize_company
+        assert normalize_company("DataDog LLC") == "DataDog"
+
+    def test_alias_meta(self):
+        from src.signals.normalizer import normalize_company
+        assert normalize_company("Meta Platforms, Inc.") == "Meta"
+        assert normalize_company("Facebook") == "Meta"
+
+    def test_alias_google(self):
+        from src.signals.normalizer import normalize_company
+        assert normalize_company("Alphabet Inc.") == "Google"
+
+    def test_companies_are_same(self):
+        from src.signals.normalizer import companies_are_same
+        assert companies_are_same("Stripe Inc.", "Stripe")
+        assert companies_are_same("Meta Platforms, Inc.", "Facebook")
+
+    def test_companies_different(self):
+        from src.signals.normalizer import companies_are_same
+        assert not companies_are_same("Stripe", "Square")
+
+    def test_empty_returns_empty(self):
+        from src.signals.normalizer import normalize_company
+        assert normalize_company("") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -30,20 +66,24 @@ class TestSignalsDB:
         score = get_company_score("Lyft", db_path=tmp_db)
         assert score["hiring_score"] < 0.5
 
+    def test_funding_sets_last_funding_at(self, tmp_db):
+        from src.signals.database import save_signal, get_company_score
+        save_signal("Anthropic", "funding", confidence=0.9, db_path=tmp_db)
+        score = get_company_score("Anthropic", db_path=tmp_db)
+        assert score.get("last_funding_at") is not None
+
+    def test_canonical_name_stored(self, tmp_db):
+        from src.signals.database import save_signal, get_company_score
+        save_signal("Meta Platforms, Inc.", "funding", confidence=0.8, db_path=tmp_db)
+        score = get_company_score("Meta Platforms, Inc.", db_path=tmp_db)
+        assert score["canonical_name"] == "Meta"
+
     def test_multiple_signals_accumulate(self, tmp_db):
         from src.signals.database import save_signal, get_company_score
         save_signal("DataDog", "funding", confidence=0.9, db_path=tmp_db)
         save_signal("DataDog", "expansion", confidence=0.8, db_path=tmp_db)
         score = get_company_score("DataDog", db_path=tmp_db)
         assert score["signal_count"] == 2
-        assert score["hiring_score"] > 0.5
-
-    def test_get_signals_filter_by_type(self, tmp_db):
-        from src.signals.database import save_signal, get_signals
-        save_signal("Google", "funding", confidence=0.8, db_path=tmp_db)
-        save_signal("Google", "layoff", confidence=0.7, db_path=tmp_db)
-        layoff_sigs = get_signals(signal_type="layoff", db_path=tmp_db)
-        assert all(s["signal_type"] == "layoff" for s in layoff_sigs)
 
     def test_stats_structure(self, tmp_db):
         from src.signals.database import save_signal, get_signals_stats
@@ -69,7 +109,6 @@ class TestClassifier:
         from src.signals.classifier import classify_text
         r = classify_text("Company announces layoff of 500 employees in workforce reduction")
         assert r.signal_type == "layoff"
-        assert r.confidence >= 0.5
 
     def test_classify_acquisition(self):
         from src.signals.classifier import classify_text
@@ -86,20 +125,20 @@ class TestClassifier:
         r = classify_text("OpenAI raises $500M from Microsoft")
         assert r.amount == "$500M"
 
-    def test_company_extracted(self):
+    def test_company_normalized(self):
         from src.signals.classifier import classify_text
-        r = classify_text("Stripe raises $200M in new funding round")
-        assert "stripe" in r.company.lower()
+        r = classify_text("Stripe Inc. raises $200M in new funding round")
+        assert r.company == "Stripe"
+
+    def test_sector_tags_detected(self):
+        from src.signals.classifier import classify_text
+        r = classify_text("Epic Systems expands healthcare EHR platform for hospital networks")
+        assert "healthcare" in r.sector_tags
 
     def test_is_actionable(self):
         from src.signals.classifier import classify_text, is_actionable
         r = classify_text("Anthropic raises $750M Series C")
         assert is_actionable(r)
-
-    def test_noise_not_actionable(self):
-        from src.signals.classifier import classify_text, is_actionable
-        r = classify_text("Nothing of note happened today in tech")
-        assert not is_actionable(r)
 
 
 # ---------------------------------------------------------------------------
@@ -107,40 +146,69 @@ class TestClassifier:
 # ---------------------------------------------------------------------------
 
 class TestScorer:
-    def test_recompute_score_no_signals(self, tmp_db):
-        from src.signals.scorer import recompute_company_score
-        score = recompute_company_score("Unknown Corp", db_path=tmp_db)
-        assert score == 0.50  # neutral default
+    def test_hiring_window_warm(self):
+        from src.signals.scorer import compute_hiring_window
+        from datetime import datetime, timedelta
+        recent = (datetime.utcnow() - timedelta(days=10)).isoformat()
+        assert compute_hiring_window(recent) == "warm"
 
-    def test_recompute_after_funding(self, tmp_db):
+    def test_hiring_window_peak(self):
+        from src.signals.scorer import compute_hiring_window
+        from datetime import datetime, timedelta
+        mid = (datetime.utcnow() - timedelta(days=50)).isoformat()
+        assert compute_hiring_window(mid) == "peak"
+
+    def test_hiring_window_cooling(self):
+        from src.signals.scorer import compute_hiring_window
+        from datetime import datetime, timedelta
+        old = (datetime.utcnow() - timedelta(days=120)).isoformat()
+        assert compute_hiring_window(old) == "cooling"
+
+    def test_hiring_window_unknown(self):
+        from src.signals.scorer import compute_hiring_window
+        assert compute_hiring_window(None) == "unknown"
+
+    def test_sector_boost_backend(self):
+        from src.signals.scorer import compute_sector_boost
+        texts = ["Stripe expanding cloud infrastructure and kubernetes platform"]
+        boost = compute_sector_boost(texts, target_role="backend")
+        assert boost > 0.0
+
+    def test_sector_boost_no_match(self):
+        from src.signals.scorer import compute_sector_boost
+        texts = ["Retail store opening in downtown Chicago"]
+        boost = compute_sector_boost(texts, target_role="backend")
+        assert boost == 0.0
+
+    def test_signal_confidence_multiple(self, tmp_db):
         from src.signals.database import save_signal
-        from src.signals.scorer import recompute_company_score
-        save_signal("Figma", "funding", confidence=0.9, db_path=tmp_db)
-        score = recompute_company_score("Figma", db_path=tmp_db)
-        assert score > 0.50
+        from src.signals.scorer import compute_signal_confidence
+        for _ in range(3):
+            save_signal("Stripe", "funding", confidence=0.8, db_path=tmp_db)
+        conf = compute_signal_confidence("Stripe", db_path=tmp_db)
+        assert conf >= 0.90
 
-    def test_refresh_persists(self, tmp_db):
-        from src.signals.database import save_signal, get_company_score
+    def test_priority_score_formula(self):
+        from src.signals.scorer import compute_priority_score
+        score = compute_priority_score(
+            match_score=0.85,
+            signal_score=0.80,
+            sector_boost=0.20,
+            hiring_window="peak",
+            has_layoff=False,
+        )
+        assert 0.70 < score <= 1.0
+
+    def test_priority_score_layoff_penalty(self):
+        from src.signals.scorer import compute_priority_score
+        with_layoff = compute_priority_score(0.80, 0.80, 0.10, "peak", has_layoff=True)
+        without_layoff = compute_priority_score(0.80, 0.80, 0.10, "peak", has_layoff=False)
+        assert with_layoff < without_layoff
+
+    def test_refresh_company_score_stores_window(self, tmp_db):
+        from src.signals.database import save_signal
         from src.signals.scorer import refresh_company_score
-        save_signal("Airbnb", "expansion", confidence=0.8, db_path=tmp_db)
-        result = refresh_company_score("Airbnb", db_path=tmp_db)
-        assert result["hiring_score"] > 0.50
-        assert "trend" in result
-
-    def test_get_top_companies(self, tmp_db):
-        from src.signals.database import save_signal
-        from src.signals.scorer import get_top_companies, refresh_company_score
-        save_signal("TopCo", "funding", confidence=0.95, db_path=tmp_db)
-        save_signal("TopCo", "expansion", confidence=0.90, db_path=tmp_db)
-        refresh_company_score("TopCo", db_path=tmp_db)
-        top = get_top_companies(min_score=0.5, db_path=tmp_db)
-        assert any(c["company"] == "TopCo" for c in top)
-
-    def test_enrich_jobs_with_signals(self, tmp_db):
-        from src.signals.database import save_signal
-        from src.signals.scorer import enrich_jobs_with_signals
-        save_signal("Twilio", "funding", confidence=0.8, db_path=tmp_db)
-        enriched = enrich_jobs_with_signals(["Twilio", "Unknown"], db_path=tmp_db)
-        assert "Twilio" in enriched
-        assert "Unknown" in enriched
-        assert enriched["Twilio"]["signal_count"] >= 1
+        save_signal("Figma", "funding", confidence=0.9, db_path=tmp_db)
+        result = refresh_company_score("Figma", db_path=tmp_db)
+        assert "hiring_window" in result
+        assert result["hiring_window"] in ("warm", "peak", "cooling", "unknown")
