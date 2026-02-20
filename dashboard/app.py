@@ -1263,6 +1263,172 @@ def _render_studio_skill_transfer(backend_url: str):
             st.warning("Enter skills in both fields.")
 
 
+# --- Signals ---
+def render_signals(backend_url: str):
+    """Signals tab — hiring predictions, company scores, layoff alerts."""
+    st.subheader("Hiring Signals")
+    st.caption("Company hiring scores from public signals: funding, expansions, layoffs. Updated every 6 hours.")
+
+    sig_tab1, sig_tab2, sig_tab3 = st.tabs(["Company Scores", "Signal Feed", "Classify Text"])
+
+    # ---- Company Scores ----
+    with sig_tab1:
+        try:
+            sr = requests.get(f"{backend_url}/signals/stats", timeout=10)
+            sr.raise_for_status()
+            stats = sr.json()
+        except Exception:
+            stats = {}
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Companies Tracked", stats.get("companies_tracked", 0))
+        c2.metric("Total Signals", stats.get("total_signals", 0))
+        c3.metric("High-Score Companies", stats.get("high_score_companies", 0))
+        c4.metric("Layoff Alerts", stats.get("layoff_alerts", 0))
+
+        st.divider()
+
+        col_top, col_avoid = st.columns(2)
+
+        with col_top:
+            st.markdown("**Likely Hiring (score ≥ 0.65)**")
+            try:
+                tr = requests.get(f"{backend_url}/signals/top", params={"min_score": 0.65, "limit": 10}, timeout=10)
+                tr.raise_for_status()
+                top_companies = tr.json().get("companies", [])
+            except Exception:
+                top_companies = []
+
+            if not top_companies:
+                st.info("No high-score companies yet.")
+            else:
+                import pandas as pd
+                df_top = pd.DataFrame([{
+                    "Company": c["company"],
+                    "Score": f"{c['hiring_score']:.0%}",
+                    "Trend": {"up": "↑", "down": "↓", "stable": "→"}.get(c["trend"], "→"),
+                    "Signals": c["signal_count"],
+                    "Last Signal": (c.get("last_signal_at") or "")[:10],
+                } for c in top_companies])
+                st.dataframe(df_top, use_container_width=True, hide_index=True)
+
+        with col_avoid:
+            st.markdown("**Avoid — Layoff Signals (score < 0.30)**")
+            try:
+                ar = requests.get(f"{backend_url}/signals/avoid", params={"max_score": 0.30, "limit": 10}, timeout=10)
+                ar.raise_for_status()
+                avoid_companies = ar.json().get("companies", [])
+            except Exception:
+                avoid_companies = []
+
+            if not avoid_companies:
+                st.success("No layoff alerts.")
+            else:
+                import pandas as pd
+                df_avoid = pd.DataFrame([{
+                    "Company": c["company"],
+                    "Score": f"{c['hiring_score']:.0%}",
+                    "Neg. Signals": c.get("negative_signals", 0),
+                } for c in avoid_companies])
+                st.dataframe(df_avoid, use_container_width=True, hide_index=True)
+
+        # All companies table
+        st.divider()
+        st.markdown("**All tracked companies**")
+        min_score_filter = st.slider("Min score", 0.0, 1.0, 0.0, 0.05, key="sig_min_score")
+        try:
+            cr = requests.get(f"{backend_url}/signals/companies", params={"min_score": min_score_filter, "limit": 100}, timeout=10)
+            cr.raise_for_status()
+            all_companies = cr.json().get("companies", [])
+        except Exception:
+            all_companies = []
+
+        if all_companies:
+            import pandas as pd
+            df_all = pd.DataFrame([{
+                "Company": c["company"],
+                "Hiring Score": round(c["hiring_score"], 2),
+                "Trend": {"up": "↑", "down": "↓", "stable": "→"}.get(c["trend"], "→"),
+                "Signals": c["signal_count"],
+                "Positive": c.get("positive_signals", 0),
+                "Negative": c.get("negative_signals", 0),
+                "Last Signal": (c.get("last_signal_at") or "")[:10],
+            } for c in all_companies])
+            st.dataframe(df_all, use_container_width=True, hide_index=True, height=350)
+
+    # ---- Signal Feed ----
+    with sig_tab2:
+        f1, f2 = st.columns(2)
+        with f1:
+            company_filter = st.text_input("Company", "", key="sig_company_filter")
+        with f2:
+            type_filter = st.selectbox(
+                "Signal Type",
+                ["", "funding", "expansion", "acquisition", "contract", "layoff", "leadership", "product"],
+                key="sig_type_filter",
+            )
+
+        try:
+            params = {"limit": 50}
+            if company_filter:
+                params["company"] = company_filter
+            if type_filter:
+                params["signal_type"] = type_filter
+            fr = requests.get(f"{backend_url}/signals/signals", params=params, timeout=10)
+            fr.raise_for_status()
+            feed_signals = fr.json().get("signals", [])
+        except Exception as e:
+            st.error(f"Error: {e}")
+            feed_signals = []
+
+        if not feed_signals:
+            st.info("No signals found. Run the Signal Bot to fetch latest data.")
+        else:
+            _TYPE_ICONS = {
+                "funding": "💰", "expansion": "📈", "acquisition": "🤝",
+                "contract": "📋", "layoff": "🔴", "leadership": "👔",
+                "product": "🚀", "noise": "💤",
+            }
+            for sig in feed_signals:
+                icon = _TYPE_ICONS.get(sig.get("signal_type", "noise"), "")
+                company = sig.get("company", "Unknown")
+                stype = sig.get("signal_type", "noise")
+                conf = sig.get("confidence", 0.0)
+                date = (sig.get("discovered_at") or "")[:10]
+                text = sig.get("signal_text", "")[:120]
+                source = sig.get("source_name", "")
+                st.markdown(f"{icon} **{company}** — `{stype}` ({conf:.0%}) — {date}")
+                if text:
+                    st.caption(f"{text}  _{source}_")
+
+    # ---- Classify Text ----
+    with sig_tab3:
+        st.markdown("Test the signal classifier on any news headline.")
+        classify_text_input = st.text_area("Paste headline or news text", height=100, key="sig_classify_input")
+        company_hint = st.text_input("Company name (optional)", key="sig_company_hint")
+        if st.button("Classify", key="sig_classify_btn"):
+            if not classify_text_input.strip():
+                st.warning("Enter some text.")
+            else:
+                try:
+                    cr = requests.post(
+                        f"{backend_url}/signals/classify",
+                        json={"text": classify_text_input, "company_hint": company_hint},
+                        timeout=10,
+                    )
+                    cr.raise_for_status()
+                    result = cr.json()
+                    st.success(f"Signal type: **{result['signal_type']}** ({result['confidence']:.0%} confidence)")
+                    if result.get("company"):
+                        st.write(f"Company detected: **{result['company']}**")
+                    if result.get("amount"):
+                        st.write(f"Amount: **{result['amount']}**")
+                    if result.get("matched_keywords"):
+                        st.write(f"Keywords matched: {', '.join(result['matched_keywords'])}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+
 # --- CRM ---
 def render_crm(backend_url: str):
     """CRM tab — contacts table, Today's Actions, thread history."""
@@ -2027,11 +2193,11 @@ def main():
 
     st.title("JobPilot Dashboard")
 
-    # Main tabs — 10 tabs
+    # Main tabs — 11 tabs
     (tab_overview, tab_disc, tab_table, tab_my_resumes,
-     tab_cover, tab_resume, tab_crm, tab_bots, tab_rules, tab_sites) = st.tabs(
+     tab_cover, tab_resume, tab_crm, tab_signals, tab_bots, tab_rules, tab_sites) = st.tabs(
         ["Overview", "Job Discovery", "Applications", "My Resumes",
-         "Cover Letter", "Resume Studio", "CRM", "Bot Controls", "Email Rules", "Sites & Sources"]
+         "Cover Letter", "Resume Studio", "CRM", "Signals", "Bot Controls", "Email Rules", "Sites & Sources"]
     )
 
     with tab_overview:
@@ -2056,6 +2222,9 @@ def main():
 
     with tab_crm:
         render_crm(backend_url)
+
+    with tab_signals:
+        render_signals(backend_url)
 
     with tab_bots:
         render_bot_controls()
