@@ -122,12 +122,12 @@ def _get_crm_actions(limit: int = 5) -> list[Action]:
 
 def _get_job_actions(min_score: float = 0.70, limit: int = 5) -> list[Action]:
     try:
-        from src.database import get_db
+        from src.discovery.database import get_db
         conn = get_db()
         rows = conn.execute(
-            """SELECT job_id, company, role, url, match_score, source
-               FROM jobs
-               WHERE status = 'To Apply'
+            """SELECT id, company, title, url, match_score, source_name
+               FROM discovered_jobs
+               WHERE status IN ('new', 'saved')
                AND match_score >= ?
                ORDER BY match_score DESC
                LIMIT ?""",
@@ -141,12 +141,12 @@ def _get_job_actions(min_score: float = 0.70, limit: int = 5) -> list[Action]:
             actions.append(Action(
                 action_type=ACTION_JOB_APPLY,
                 priority=min(0.99, float(score)),
-                title=f"Apply: {r['role']} at {r['company']}",
-                description=f"Match score: {score:.0%} | Source: {r.get('source','')}",
+                title=f"Apply: {r['title']} at {r['company']}",
+                description=f"Match score: {score:.0%} | Source: {r.get('source_name','')}",
                 action_label="Apply ▸",
                 source="jobs",
-                data={"job_id": r["job_id"], "company": r["company"],
-                      "role": r["role"], "url": r["url"], "match_score": score},
+                data={"job_id": r["id"], "company": r["company"],
+                      "role": r["title"], "url": r["url"], "match_score": score},
             ))
         return actions
     except Exception:
@@ -275,17 +275,17 @@ def get_system_stats() -> dict:
 
     # Jobs
     try:
-        from src.database import get_db
+        from src.discovery.database import get_db
         conn = get_db()
-        stats["total_jobs"] = conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()["c"]
+        stats["total_jobs"] = conn.execute("SELECT COUNT(*) AS c FROM discovered_jobs").fetchone()["c"]
         stats["to_apply"] = conn.execute(
-            "SELECT COUNT(*) AS c FROM jobs WHERE status = 'To Apply'"
+            "SELECT COUNT(*) AS c FROM discovered_jobs WHERE status IN ('new', 'saved')"
         ).fetchone()["c"]
         stats["applied"] = conn.execute(
-            "SELECT COUNT(*) AS c FROM jobs WHERE status = 'Applied'"
+            "SELECT COUNT(*) AS c FROM discovered_jobs WHERE status = 'applied'"
         ).fetchone()["c"]
         stats["interviewing"] = conn.execute(
-            "SELECT COUNT(*) AS c FROM jobs WHERE status = 'Interviewing'"
+            "SELECT COUNT(*) AS c FROM discovered_jobs WHERE status = 'interviewing'"
         ).fetchone()["c"]
         conn.close()
     except Exception:
@@ -332,14 +332,14 @@ def get_system_stats() -> dict:
 def get_pipeline_funnel() -> dict:
     """Jobs funnel: discovered → to_apply → applied → interviewing → offer."""
     try:
-        from src.database import get_db
+        from src.discovery.database import get_db
         conn = get_db()
         stages = {
-            "discovered": "SELECT COUNT(*) AS c FROM jobs",
-            "to_apply":    "SELECT COUNT(*) AS c FROM jobs WHERE status = 'To Apply'",
-            "applied":     "SELECT COUNT(*) AS c FROM jobs WHERE status = 'Applied'",
-            "interviewing":"SELECT COUNT(*) AS c FROM jobs WHERE status = 'Interviewing'",
-            "offer":       "SELECT COUNT(*) AS c FROM jobs WHERE status IN ('Offer','Accepted')",
+            "discovered":  "SELECT COUNT(*) AS c FROM discovered_jobs",
+            "to_apply":    "SELECT COUNT(*) AS c FROM discovered_jobs WHERE status IN ('new', 'saved')",
+            "applied":     "SELECT COUNT(*) AS c FROM discovered_jobs WHERE status = 'applied'",
+            "interviewing":"SELECT COUNT(*) AS c FROM discovered_jobs WHERE status = 'interviewing'",
+            "offer":       "SELECT COUNT(*) AS c FROM discovered_jobs WHERE status IN ('offer','accepted')",
         }
         funnel = {}
         for stage, sql in stages.items():

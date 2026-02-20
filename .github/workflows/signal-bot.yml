@@ -1,0 +1,58 @@
+name: Signal Bot — Track Company Hiring
+
+on:
+  schedule:
+    # Every 2 hours
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  track-signals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore databases from cache
+        uses: actions/cache@v4
+        with:
+          path: data/
+          key: signal-database-${{ github.run_number }}
+          restore-keys: |
+            signal-database-
+            job-database-
+
+      - name: Create directories
+        run: mkdir -p data logs credentials
+
+      - name: Write credentials
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > credentials/decent-booster-484319-i2-3eefecefe5e7.json
+
+      - name: Write .env
+        run: |
+          cat > .env << 'EOF'
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_SERVICE_ACCOUNT_FILE=credentials/decent-booster-484319-i2-3eefecefe5e7.json
+          GOOGLE_SHEET_ID=${{ secrets.GOOGLE_SHEET_ID }}
+          LOG_LEVEL=INFO
+          LOG_DIR=logs
+          EOF
+
+      - name: Run Signal Bot
+        env:
+          PYTHONPATH: .
+        run: python -m bots.signal_bot.run
+        continue-on-error: true

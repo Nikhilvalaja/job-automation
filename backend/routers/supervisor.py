@@ -51,12 +51,12 @@ def top_jobs(
 ):
     """Top scoring jobs with best resume suggestion."""
     try:
-        from src.database import get_db
+        from src.discovery.database import get_db
         conn = get_db()
         rows = conn.execute(
-            """SELECT job_id, company, role, url, match_score, source,
-                      date_applied, status
-               FROM jobs
+            """SELECT id, company, title, url, match_score, source_name,
+                      applied_at, status
+               FROM discovered_jobs
                WHERE match_score >= ?
                ORDER BY match_score DESC
                LIMIT ?""",

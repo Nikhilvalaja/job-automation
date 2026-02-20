@@ -1,0 +1,99 @@
+name: Discovery Bot — Find Jobs 24/7
+
+on:
+  schedule:
+    # Every 30 minutes, 24/7 — even when laptop is off
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    # Also allows manual trigger from GitHub UI
+    inputs:
+      sources:
+        description: 'Specific sources (leave blank for all)'
+        required: false
+        default: ''
+
+jobs:
+  discover-jobs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore job database from cache
+        uses: actions/cache@v4
+        with:
+          path: data/
+          key: job-database-${{ github.run_number }}
+          restore-keys: |
+            job-database-
+
+      - name: Create data directory
+        run: mkdir -p data logs
+
+      - name: Write credentials from secrets
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > credentials/decent-booster-484319-i2-3eefecefe5e7.json
+          mkdir -p credentials
+
+      - name: Write .env from secrets
+        run: |
+          cat > .env << 'EOF'
+          BACKEND_HOST=0.0.0.0
+          BACKEND_PORT=8000
+          DEBUG=false
+          GOOGLE_SERVICE_ACCOUNT_FILE=credentials/decent-booster-484319-i2-3eefecefe5e7.json
+          GOOGLE_SHEET_ID=${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_WORKSHEET_NAME=Applications
+          GMAIL_CREDENTIALS_FILE=credentials/gmail_credentialsss.json
+          GMAIL_TOKEN_FILE=credentials/gmail_token.json
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL=gpt-4o-mini
+          EMAIL_BOT_INTERVAL_MINUTES=5
+          REMINDER_BOT_HOUR=9
+          REMINDER_BOT_MINUTE=0
+          DISCOVERY_BOT_INTERVAL_MINUTES=30
+          FOLLOWUP_THRESHOLD_DAYS=7
+          DISCOVERY_KEYWORDS=${{ secrets.DISCOVERY_KEYWORDS }}
+          DISCOVERY_LOCATIONS=${{ secrets.DISCOVERY_LOCATIONS }}
+          DISCOVERY_EXCLUDED_KEYWORDS=${{ secrets.DISCOVERY_EXCLUDED_KEYWORDS }}
+          LOG_LEVEL=INFO
+          LOG_DIR=logs
+          EOF
+
+      - name: Run Discovery Bot
+        env:
+          PYTHONPATH: .
+        run: |
+          SOURCES="${{ github.event.inputs.sources }}"
+          if [ -n "$SOURCES" ]; then
+            python -m bots.discovery_bot.run --sources "$SOURCES"
+          else
+            python -m bots.discovery_bot.run
+          fi
+
+      - name: Show stats
+        env:
+          PYTHONPATH: .
+        run: python -m bots.discovery_bot.run --stats
+        continue-on-error: true
+
+      - name: Upload logs as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: discovery-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 7
