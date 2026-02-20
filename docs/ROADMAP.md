@@ -76,17 +76,255 @@ Never violates word constraints.
 
 ---
 
+## Safety & Reliability Infrastructure
+
+> Every milestone includes safety as a first-class feature, not an afterthought.
+
+### Data Protection
+
+| Concern | Solution | Milestone |
+|---------|----------|-----------|
+| **SQLite DB lost/corrupted** | Automatic daily backups to `data/backups/`, keep 7 daily + 4 weekly. Backup BEFORE every migration. | M10 |
+| **Google Sheets lost** | Periodic export to local JSON snapshot (`data/sheets_backup/`). Sheet is a mirror, SQLite is source of truth. | M10 |
+| **Saved/interested jobs deleted** | Protected status: retention policy NEVER deletes saved/applied/interested jobs. Only auto-archives "new"+"dismissed" after 90 days. | M10 |
+| **Dashboard data lost** | Dashboard is code (git). Data is SQLite (backed up). Config is `.env` (gitignored, user responsibility). | Already safe |
+| **DB corruption mid-write** | WAL mode (already on), atomic transactions, connection-per-request pattern. | M9 (done) |
+
+### Scale Strategy (100,000+ Jobs)
+
+| Concern | Solution | Milestone |
+|---------|----------|-----------|
+| **Memory explosion** | NEVER load all jobs into memory. All queries use LIMIT/OFFSET pagination. Dashboard pages through 100 at a time. | M10 |
+| **DB file grows huge** | Weekly VACUUM. Retention policy: archive old "new"/"dismissed" jobs after 90 days into `archived_jobs` table. Active jobs stay forever. | M10 |
+| **Search is slow** | FTS5 full-text search (already built). Indexed columns for all filters. Queries use indexed WHERE clauses. | M9 (done) |
+| **API is slow** | All endpoints use SQL LIMIT. Discovery API already paginates. Backend returns max 200 results per request. | M10 |
+| **Embedding cost** | Cache every embedding in SQLite BLOB. Never re-embed the same text. Batch API calls (20 texts/request). | M10 |
+
+### AI/Bot Accuracy
+
+| Concern | Solution | Milestone |
+|---------|----------|-----------|
+| **LLM misclassifies JDs** | Keyword parser runs FIRST (deterministic). LLM only upgrades. Every LLM output is validated against keyword output — disagreements flagged. | M10 |
+| **Confidence scoring** | Every parse gets a `confidence` score (0.0-1.0). Low confidence (<0.5) = flagged for human review on dashboard. | M10 |
+| **Hallucinated skills in resume** | `skill_inventory_master_list` is the ONLY allowed pool. Validation engine rejects any skill not in the list. | M11 |
+| **Bot crashes don't cascade** | Each bot runs independently (already true). Orchestrator catches exceptions per-bot. One failing doesn't stop others. | M5 (done) |
+| **Wrong email classification** | Confidence scores on email rules. Manual override in dashboard. Custom rules to fix patterns. | M3 (done) |
+
+### Monitoring & Alerts
+
+| What | How | Milestone |
+|------|-----|-----------|
+| **DB size** | Health endpoint reports `discovered_jobs` count + DB file size. Alert if >500MB. | M10 |
+| **Source errors** | Adaptive scheduling already slows down broken sources. Dashboard shows error counts. | M9 (done) |
+| **Bot failures** | Telegram alert on any bot crash (already built in Orchestrator). | M5 (done) |
+| **Backup status** | Health endpoint reports last backup time. Alert if >48 hours since last backup. | M10 |
+
+---
+
+## Dashboard Evolution
+
+> The dashboard grows with every milestone. Each milestone adds new tabs and improves existing ones.
+
+### Current Dashboard (M7-M9)
+
+```
++--------------------------------------------------+
+| TABS: Overview | Discovery | Applications |       |
+|        Cover Letter | Resume | Bot Controls |     |
+|        Email Rules | Sites                        |
++--------------------------------------------------+
+| SIDEBAR: Backend URL, Add Job, Refresh            |
++--------------------------------------------------+
+```
+
+### M10 Dashboard Additions
+
+```
++--------------------------------------------------+
+| Discovery Tab UPGRADED:                           |
+| +----------------------------------------------+ |
+| | [Search: ___________] [Filters v]            | |
+| +----------------------------------------------+ |
+| | Title          | Company | Score | Skills Gap | |
+| | [clickable URL]| Stripe  | 0.91  | -spark    | |
+| | [clickable URL]| Google  | 0.87  | -k8s      | |
+| | Click row → expands:                          | |
+| |   Must-have: [python][aws][spark]             | |
+| |   You have:  [python][aws]  Missing: [spark]  | |
+| |   Top 6 bullets from YOUR resume for this job | |
+| |   [Apply ▸] button → opens URL + shows best  | |
+| |   resume variant to use                        | |
+| +----------------------------------------------+ |
+|                                                    |
+| NEW TAB: My Resumes                               |
+| +----------------------------------------------+ |
+| | Upload Resume: [Choose file] [Upload]         | |
+| | Active Resumes:                                | |
+| |   v1_general.pdf    (default)                  | |
+| |   v2_data_focus.pdf (uploaded 2/15)            | |
+| | Skill Inventory: python, aws, sql, ...         | |
+| +----------------------------------------------+ |
++--------------------------------------------------+
+```
+
+**Key UX improvements in M10:**
+- Job URLs are **clickable links** that open in new tab
+- Every job row shows **match score + missing skills** at a glance
+- Click "Apply" → opens job URL AND shows which resume to use
+- New "My Resumes" tab: upload resumes, view skill inventory
+- Pagination: 50 jobs per page (handles 100K+ jobs)
+- Confidence badges: green (high), yellow (medium), red (needs review)
+
+### M11 Dashboard Additions
+
+```
+| NEW TAB: Resume Studio                            |
+| +----------------------------------------------+ |
+| | Select job to tailor for: [dropdown]           | |
+| | Original        vs      Tailored               | |
+| | +-----------+       +-----------+              | |
+| | | bullet 1  |  -->  | bullet 1' | [approve]   | |
+| | | bullet 2  |  -->  | bullet 2' | [reject]    | |
+| | +-----------+       +-----------+              | |
+| | Validation: [pass] word count  [pass] skills   | |
+| |             [pass] metrics     [pass] sim≥0.9  | |
+| | [Save Variant] [Export DOCX]                   | |
+| +----------------------------------------------+ |
+| | Variant History:                                | |
+| |   Stripe_v1 (score: 0.91) — approved           | |
+| |   Google_v1 (score: 0.87) — pending             | |
+| +----------------------------------------------+ |
+```
+
+### M12-M14 Dashboard Additions
+
+```
+| NEW TAB: CRM (M12)                               |
+| +----------------------------------------------+ |
+| | Contacts: 45  | Active: 30 | Follow-ups: 5   | |
+| | [Name] [Company] [Last Contact] [Next Action] | |
+| | Click → thread history + schedule next action  | |
+| +----------------------------------------------+ |
+|                                                    |
+| NEW TAB: Signals (M13)                            |
+| +----------------------------------------------+ |
+| | Company    | Hiring Score | Trend | Signal    | |
+| | DataDog    | 0.87         | ↑     | $200M     | |
+| | Stripe     | 0.75         | →     | expanding | |
+| | Lyft       | 0.20         | ↓     | WARN      | |
+| +----------------------------------------------+ |
+|                                                    |
+| UPGRADED: Outreach (M14)                          |
+| +----------------------------------------------+ |
+| | Today's Drafts:                                | |
+| | 1. Alice (Stripe) — Follow-up #1 [Approve]    | |
+| | 2. Bob (Google) — Initial reach [Approve]      | |
+| | Draft preview: "Hi Alice, ..."  [Edit] [Send]  | |
+| +----------------------------------------------+ |
+```
+
+### M16: Supervisor Dashboard (Final State)
+
+```
++--------------------------------------------------------------+
+|  TODAY'S ACTIONS (priority-ranked)                             |
+|  1. Follow up with Alice (Stripe) — 3 days since last message |
+|  2. Apply: ML Engineer at Anthropic (score: 0.94) [Apply ▸]  |
+|  3. New signal: DataDog raised $200M (hiring score: 0.87)     |
++--------------------------------------------------------------+
+|  TOP JOBS (ML-ranked)  |  SIGNALS          |  CRM ACTIVITY    |
+|  - Anthropic (0.94) ▸  |  DataDog: funding |  Alice: replied   |
+|  - Stripe (0.91) ▸     |  Figma: expanding |  Bob: follow up   |
+|  - Google (0.88) ▸     |  Avoid: Lyft      |  Carol: cold       |
+|  Each job: click → URL |                                       |
+|  + best resume variant |                                       |
++--------------------------------------------------------------+
+|  PIPELINE FUNNEL  |  RESPONSE RATES  |  BOT HEALTH             |
+|  100 → 40 → 10   |  Outreach: 22%   |  Collector: 297 sources  |
+|  → 5 → 2 offers  |  Referral: 45%   |  Signal: 15 feeds        |
++--------------------------------------------------------------+
+|  DB: 125K jobs | Backups: OK (2h ago) | Disk: 340MB             |
++--------------------------------------------------------------+
+```
+
+### Interconnected Flow (How Everything Links Together)
+
+```
+DISCOVER → SCORE → SUGGEST RESUME → APPLY → TRACK → FOLLOW UP
+
+1. Discovery Bot finds "ML Engineer at Stripe" (297 sources)
+         ↓
+2. Scoring Engine: match_score=0.91, missing=[spark]
+         ↓
+3. Dashboard: shows job with score + clickable URL
+         ↓
+4. You click "Apply ▸":
+   - Opens job URL in browser
+   - Shows "Best resume: v2_data_focus (score: 0.91)"
+   - Shows "Missing skills: spark (consider adding to resume)"
+   - Shows top 6 bullets to emphasize
+         ↓
+5. (M11) You click "Tailor Resume":
+   - Side-by-side diff of bullets
+   - Approve/reject each change
+   - Export tailored DOCX
+         ↓
+6. Job moves to "Applied" status → tracks in Google Sheets
+         ↓
+7. Email Bot watches for replies → auto-classifies
+         ↓
+8. Reminder Bot: if no reply in 7 days → Telegram alert
+         ↓
+9. (M12) CRM Bot: "Follow up with recruiter?"
+         ↓
+10. (M14) Outreach Bot: drafts follow-up → you approve → sends
+```
+
+### Telegram Notifications (Progressive)
+
+| Event | Milestone | Format |
+|-------|-----------|--------|
+| Stale application reminder | M4 (done) | "3 apps have no reply for 7+ days" |
+| Bot crash alert | M5 (done) | "Email Bot failed: ConnectionError" |
+| High-score job found | M10 | "New match: ML Engineer at Stripe (0.91)" |
+| Resume variant ready | M11 | "Tailored resume for Stripe ready for review" |
+| Follow-up due | M12 | "Follow up with Alice (Stripe) — 3 days" |
+| Hiring signal | M13 | "DataDog raised $200M — likely hiring" |
+| Outreach draft ready | M14 | "Draft ready: Alice (Stripe) follow-up #1" |
+
+---
+
 ## Upcoming Milestones
 
 ---
 
-### M10: Resume Intelligence Engine (Phase 1 — Deterministic + Embeddings)
+### M10: Resume Intelligence Engine + Safety Foundation
 
-**Goal:** Score how well a JD matches your resume. Identify missing skills. Rank your best bullets. No rewriting yet — pure analysis.
+**Goal:** Score how well a JD matches your resume. Identify missing skills. Rank your best bullets. No rewriting yet — pure analysis. PLUS: backup infrastructure, pagination, retention policy.
 
 **Philosophy:** Deterministic first, LLM only for embeddings.
 
-#### Module 1 — JD Ingestion & Normalization
+#### Part A — Safety & Infrastructure
+
+**New files:**
+```
+src/utils/backup.py           — Automated SQLite backup + rotation
+src/utils/retention.py        — Archive old jobs, VACUUM scheduler
+```
+
+**What it does:**
+- `backup_database()`: copies SQLite DB to `data/backups/YYYY-MM-DD.db`
+- Keep 7 daily + 4 weekly backups, delete older
+- `archive_old_jobs(days=90)`: move old new/dismissed jobs to `archived_jobs` table
+- VACUUM after archival
+- Health endpoint reports DB size + backup status + job count
+
+**Dashboard: DB Health widget in sidebar:**
+```
+DB: 45,230 jobs | Size: 120MB | Backup: 2h ago ✓
+```
+
+#### Part B — JD Ingestion & Normalization (Module 1)
 
 Upgrade `src/discovery/parser.py` into a full JD normalization service.
 
@@ -101,7 +339,8 @@ Upgrade `src/discovery/parser.py` into a full JD normalization service.
   "must_have_skills": ["python", "spark", "airflow"],
   "nice_to_have_skills": ["dbt", "kubernetes"],
   "responsibilities": ["Build data pipelines", "Maintain data warehouse"],
-  "cleaned_text": "..."
+  "cleaned_text": "...",
+  "confidence": 0.85
 }
 ```
 
@@ -112,6 +351,7 @@ Upgrade `src/discovery/parser.py` into a full JD normalization service.
 - Classify must-have vs nice-to-have using rule heuristics:
   - "required", "must", "mandatory" -> must-have
   - "preferred", "nice to have", "bonus" -> nice-to-have
+- Confidence scoring: high when keywords match clearly, low when ambiguous
 
 **New files:**
 ```
@@ -120,7 +360,7 @@ src/ml/skill_taxonomy.py      — Master skill dictionary (500+ skills with alia
 src/ml/title_normalizer.py    — Title normalization rules
 ```
 
-#### Module 2 — Resume Structuring Engine
+#### Part C — Resume Structuring Engine (Module 2)
 
 Parse your resume into structured units that the scoring engine can work with.
 
@@ -157,7 +397,7 @@ src/ml/resume_parser.py        — Parse resume text into structured units
 src/ml/bullet_analyzer.py      — Extract tools, metrics, word count from each bullet
 ```
 
-#### Module 3 — Embedding & Similarity Engine
+#### Part D — Embedding & Similarity Engine (Module 3)
 
 Use OpenAI embeddings (`text-embedding-3-small`) for semantic matching.
 
@@ -204,7 +444,8 @@ job_descriptions (
     raw_text TEXT,
     cleaned_text TEXT,
     structured_json TEXT,          -- JSON blob: must_have_skills, nice_to_have, etc.
-    embedding_vector BLOB          -- cached embedding
+    embedding_vector BLOB,         -- cached embedding
+    confidence REAL DEFAULT 0.0    -- parse confidence score
 )
 
 resume_bullets (
@@ -218,16 +459,52 @@ resume_bullets (
     metrics_array TEXT,            -- comma-separated
     embedding_vector BLOB
 )
+
+resumes (
+    resume_id TEXT PRIMARY KEY,
+    name TEXT,                     -- "v1_general", "v2_data_focus"
+    file_path TEXT,                -- local path to uploaded file
+    raw_text TEXT,                 -- extracted text
+    structured_json TEXT,          -- parsed structure
+    skill_inventory TEXT,          -- comma-separated master list
+    is_default INTEGER DEFAULT 0,
+    uploaded_at TEXT,
+    updated_at TEXT
+)
 ```
+
+#### Part E — Dashboard Improvements
+
+**Discovery tab upgrades:**
+- Job URLs are **clickable links** (open in new browser tab)
+- Match score column with color coding (green ≥0.8, yellow ≥0.5, red <0.5)
+- Missing skills shown as tags next to each job
+- Click row → expand: must-have skills, skill gap, top 6 bullets
+- "Apply" button: opens job URL + shows best resume to use
+- Pagination: 50 per page (handles 100K+ jobs without memory issues)
+- Confidence badge per job (green/yellow/red)
+
+**New "My Resumes" tab:**
+- Upload resume files (PDF/DOCX/TXT)
+- View parsed skill inventory
+- Set default resume
+- See which resume is best for which job category
+
+**Sidebar additions:**
+- DB health widget: job count + DB size + last backup time
+- Quick stats: "47 new high-score jobs today"
 
 **Changes to existing code:**
 - `database.py`: add `relevance_score REAL`, `missing_skills TEXT` columns to `discovered_jobs`
 - `discovery_bot/run.py`: after insert, auto-score against resume embedding
 - Dashboard: show relevance score, missing skills, bullet recommendations
+- All API endpoints: enforce LIMIT/OFFSET pagination
 
 **New dependencies:** `numpy`, `tiktoken`
 
-**Tests:** ~25 new (JD normalization, resume parsing, bullet analysis, scoring formula, embedding mock, skill taxonomy)
+**Telegram notifications:** "New match: ML Engineer at Stripe (0.91)" for jobs scoring ≥0.8
+
+**Tests:** ~30 new (JD normalization, resume parsing, bullet analysis, scoring formula, embedding mock, skill taxonomy, backup, retention, pagination)
 
 ---
 
@@ -291,11 +568,12 @@ src/ml/validator.py            — Post-rewrite validation engine
 src/ml/diff_report.py          — Generate visual diff (original vs rewritten)
 ```
 
-**Dashboard additions:**
-- Resume variant viewer with side-by-side diff
+**Dashboard: "Resume Studio" tab:**
+- Select job → see tailored resume side-by-side with original
 - Approve/reject per-bullet
-- "Recommendation only" mode (no rewriting, just advice)
-- Variant history
+- Validation report visible (which checks passed/failed)
+- Export to DOCX
+- Variant history with scores
 
 **New DB table:**
 ```sql
@@ -310,6 +588,8 @@ resume_variants (
     created_at TEXT
 )
 ```
+
+**Telegram:** "Tailored resume for Stripe ready for review"
 
 **Tests:** ~20 new (rewrite constraints, validation checks, diff generation, rejection flow)
 
@@ -361,6 +641,13 @@ bots/crm_bot/run.py            — CRM Bot: scans Gmail, updates touchpoints, su
 backend/routers/crm.py         — API endpoints
 ```
 
+**Dashboard: "CRM" tab:**
+- Contacts table with last contact date + next action
+- Click contact → thread history, schedule next action
+- "Today's Actions" panel: who to follow up with
+
+**Telegram:** "Follow up with Alice (Stripe) — 3 days since last message"
+
 **Tests:** ~20 new
 
 ---
@@ -406,6 +693,13 @@ company_scores (
 )
 ```
 
+**Dashboard: "Signals" tab:**
+- Company hiring score table with trend arrows
+- Signal timeline
+- "Avoid" warnings for layoff signals
+
+**Telegram:** "DataDog raised $200M — likely hiring (score: 0.87)"
+
 **Output:** "Company X likely hiring in 30 days" / "Avoid Company Y (layoff signals)"
 
 **Tests:** ~15 new
@@ -433,6 +727,14 @@ Day 3:  Check for reply. If no reply -> Draft follow-up 1 -> [You approve]
 Day 7:  Check for reply. If no reply -> Draft follow-up 2 (final) -> [You approve]
 Day 14: If no reply -> Mark "cold" in CRM. Stop.
 ```
+
+**Dashboard: "Outreach" tab:**
+- Today's drafts to approve
+- Draft preview with edit capability
+- A/B variant stats
+- Sequence status per contact
+
+**Telegram:** "Draft ready: Alice (Stripe) follow-up #1 — approve in dashboard"
 
 **ML (later):** Response likelihood model, multi-armed bandit for message optimization
 
@@ -472,17 +774,21 @@ same location/industry          → 0.3
 +--------------------------------------------------------------+
 |  TODAY'S ACTIONS (priority-ranked)                             |
 |  1. Follow up with Alice (Stripe) — 3 days since last message |
-|  2. Apply: ML Engineer at Anthropic (score: 0.94)             |
+|  2. Apply: ML Engineer at Anthropic (score: 0.94) [Apply ▸]  |
 |  3. New signal: DataDog raised $200M (hiring score: 0.87)     |
 +--------------------------------------------------------------+
 |  TOP JOBS (ML-ranked)  |  SIGNALS          |  CRM ACTIVITY    |
-|  - Anthropic (0.94)    |  DataDog: funding |  Alice: replied   |
-|  - Stripe (0.91)       |  Figma: expanding |  Bob: follow up   |
-|  - Google (0.88)       |  Avoid: Lyft      |  Carol: cold       |
+|  - Anthropic (0.94) ▸  |  DataDog: funding |  Alice: replied   |
+|  - Stripe (0.91) ▸     |  Figma: expanding |  Bob: follow up   |
+|  - Google (0.88) ▸     |  Avoid: Lyft      |  Carol: cold       |
+|  Each job: click → URL |                                       |
+|  + best resume variant |                                       |
 +--------------------------------------------------------------+
 |  PIPELINE FUNNEL  |  RESPONSE RATES  |  BOT HEALTH             |
 |  100 → 40 → 10   |  Outreach: 22%   |  Collector: 297 sources  |
 |  → 5 → 2 offers  |  Referral: 45%   |  Signal: 15 feeds        |
++--------------------------------------------------------------+
+|  DB: 125K jobs | Backups: OK (2h ago) | Disk: 340MB             |
 +--------------------------------------------------------------+
 ```
 
@@ -501,32 +807,33 @@ same location/industry          → 0.3
 YOU ARE HERE
      |
      v
-M10: Resume Intelligence Engine     <-- foundation: JD normalization + resume parsing
-     |                                   + embeddings + scoring formula
-     v                                   (deterministic first, no rewriting)
+M10: Resume Intelligence + Safety   <-- JD normalization + resume parsing
+     |                                   + embeddings + scoring + backups
+     v                                   + pagination + retention + dashboard UX
 M11: Resume Optimizer                <-- LLM rewrite under constraints
      |                                   + validation engine (zero tolerance)
-     v                                   + diff reports + approval UI
+     v                                   + Resume Studio tab + DOCX export
 M12: CRM + Contacts                  <-- relationship database, cooldowns
-     |
+     |                                   + CRM tab in dashboard
      v
 M13: Hiring Signals                  <-- predict hiring before jobs appear
-     |
+     |                                   + Signals tab in dashboard
      v
 M14: Outreach Copilot               <-- draft messages, sequences (needs M12)
-     |
+     |                                   + Outreach tab in dashboard
      v
 M15: Referral Discovery              <-- contact graph, closeness scoring (needs M12)
      |
      v
-M16: Supervisor Dashboard            <-- integrates everything, learns from outcomes
+M16: Supervisor Dashboard            <-- unified command center
+                                         + ML learning from outcomes
 ```
 
 **Why this order:**
-- M10 first: scoring engine is used by everything (discovery, outreach, signals)
+- M10 first: scoring engine + safety infrastructure used by everything
 - M11 right after: resume optimization needs M10's embeddings + JD normalizer
 - M12 before M14/M15: outreach and referrals both need the contact database
-- M13 independent: can be built anytime
+- M13 independent: can be built anytime after M10
 - M16 last: integration layer that ties everything together
 
 ---
@@ -561,6 +868,8 @@ M16: Supervisor Dashboard            <-- integrates everything, learns from outc
 | Reduced manual tailoring time | 60% less | M11 user tracking |
 | Response rate (outreach) | Track improvement over baseline | M14 |
 | Interview conversion (per resume variant) | Track per variant | M16 |
+| Data safety | 0 data loss incidents | M10 backup system |
+| Scale | Handle 100K+ jobs without lag | M10 pagination + retention |
 
 ---
 
@@ -573,6 +882,7 @@ M16: Supervisor Dashboard            <-- integrates everything, learns from outc
 - Replacing human judgment
 - Scraping private networks (LinkedIn profiles, etc.)
 - Auto-sending messages without approval
+- Loading 100K jobs into memory at once
 
 ---
 
@@ -597,4 +907,4 @@ M16: Supervisor Dashboard            <-- integrates everything, learns from outc
 - **Scheduling:** Adaptive (60-360 min based on source productivity)
 - **Caching:** ETag + If-Modified-Since, content hash for change detection
 - **Tests:** 159 passing
-- **Commits:** 10 on main
+- **Commits:** 12 on main

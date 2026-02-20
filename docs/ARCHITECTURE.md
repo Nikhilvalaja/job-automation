@@ -179,6 +179,12 @@ job_descriptions (M10)
 ├── Skills: must_have[], nice_to_have[]
 └── Embedding: embedding_vector BLOB
 
+resumes (M10)
+├── Identity: resume_id, name, file_path
+├── Content: raw_text, structured_json
+├── Skills: skill_inventory (master list)
+└── Flags: is_default, uploaded_at
+
 resume_bullets (M10)
 ├── Bullet: text, word_count, tools[], metrics[]
 ├── Context: company, role, resume_version
@@ -216,6 +222,62 @@ hiring_signals (M13)
 8. **Outreach (M14):** CRM → draft message → [you approve] → Gmail → track response
 9. **Dashboard:** Streamlit → FastAPI → displays all: pipeline + jobs + signals + CRM + resume variants
 
+## Safety & Reliability
+
+### Data Protection Strategy
+
+```
+data/
+├── discovered_jobs.db          ← Main database (WAL mode)
+├── backups/
+│   ├── 2026-02-20.db          ← Daily automatic backup
+│   ├── 2026-02-19.db
+│   ├── ...                    ← Keep 7 daily + 4 weekly
+│   └── weekly-2026-02-14.db
+└── sheets_backup/
+    └── applications-2026-02-20.json  ← Google Sheets snapshot
+```
+
+**Protection layers:**
+1. **WAL mode** — prevents corruption from concurrent reads
+2. **Atomic transactions** — every insert/update is wrapped
+3. **Daily backups** — automatic copy before first bot run of the day
+4. **Backup rotation** — 7 daily + 4 weekly, auto-delete older
+5. **Pre-migration backup** — snapshot before any schema change
+6. **Protected statuses** — saved/applied/interested jobs are NEVER auto-deleted
+
+### Scale Design (100K+ Jobs)
+
+```
+                WRITE PATH                          READ PATH
+297 sources → batch insert             Dashboard → paginated API (50/page)
+    ↓           (100 at a time)            ↓
+SQLite WAL ←────────────────────→ FTS5 full-text search
+    ↓                                     ↓
+Retention policy                    Indexed WHERE clauses
+(archive after 90 days)             (11 indexes cover all filters)
+    ↓
+archived_jobs table
+(queryable but separate)
+```
+
+**Never in memory at once:** All queries use `LIMIT/OFFSET`. API returns max 200 rows. Dashboard pages 50 at a time.
+
+### AI Accuracy Guarantees
+
+```
+JD Text
+  ↓
+Keyword Parser (deterministic)  ─────────────→ baseline result
+  ↓                                                  ↑
+LLM Parser (if configured)     ─── validate against ─┘
+  ↓                                 (disagreements flagged)
+Confidence Score (0.0-1.0)
+  ↓
+Low (<0.5) → flagged for human review in dashboard
+High (≥0.8) → auto-accepted with audit trail
+```
+
 ## Key Principles
 
 - **Deterministic first:** Rules, regex, dictionaries before any LLM call
@@ -231,3 +293,5 @@ hiring_signals (M13)
 - **Adaptive:** Source scheduling adjusts based on productivity and error rates
 - **Privacy-first:** Only public sources + own Gmail. No scraping private networks.
 - **Never fabricate:** Never invent experience, skills, or metrics
+- **Backup always:** Daily automated backups, protected statuses, retention policy
+- **Paginate always:** Never load all data into memory, enforce LIMIT on all queries

@@ -353,3 +353,29 @@ Major roadmap restructure to integrate the Resume Optimization Engine into the m
 - Reduced manual tailoring time by 60%
 
 ---
+
+## 2026-02-20 — Milestone 10: Resume Intelligence Engine (Phase 1)
+
+### Built
+9 new modules:
+
+1. **Skill Taxonomy** (`src/ml/skill_taxonomy.py`) — 500+ skills, 18 categories, alias resolution, greedy phrase matching
+2. **Title Normalizer** (`src/ml/title_normalizer.py`) — 14 canonical roles, 7 seniority levels, title similarity scoring
+3. **JD Normalizer** (`src/ml/jd_normalizer.py`) — boilerplate removal, must-have vs nice-to-have, confidence scoring
+4. **Bullet Analyzer** (`src/ml/bullet_analyzer.py`) — metric extraction, tool detection, word count
+5. **Resume Parser** (`src/ml/resume_parser.py`) — section detection, experience parsing, skill inventory master list
+6. **Embedding Service** (`src/ml/embeddings.py`) — OpenAI + TF-IDF fallback, SQLite cache, batch API
+7. **Scoring Engine** (`src/ml/scorer.py`) — weighted formula: 0.40 must_have + 0.20 title + 0.20 bullet + 0.10 domain + 0.10 tools
+8. **Backup Utility** (`src/utils/backup.py`) — daily backups, 7+4 rotation, health reporting
+9. **Retention Policy** (`src/utils/retention.py`) — archive after 90 days, protected statuses, VACUUM
+
+### Safety Infrastructure
+- Automated daily backups with rotation
+- Protected statuses: saved/applied/interested NEVER auto-deleted
+- Embedding cache: never re-embed same text, saves API costs
+- Health endpoint: DB size, row count, backup status
+
+### Tests: 277 passing (up from 159)
+118 new tests across 6 test files.
+
+---
