@@ -1,4 +1,4 @@
-"""Tests for cover letter generation.
+"""Tests for cover letter generation and resume tailoring.
 
 Tests template mode (no API key needed) and LLM mode (mocked).
 """
@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.llm.generator import CoverLetterGenerator
-from src.llm.prompts import COVER_LETTER_SYSTEM, COVER_LETTER_TEMPLATE
-from src.models import CoverLetterRequest, CoverLetterResponse
+from src.llm.generator import CoverLetterGenerator, ResumeTailor
+from src.llm.prompts import COVER_LETTER_SYSTEM, COVER_LETTER_TEMPLATE, TONE_PRESETS
+from src.models import CoverLetterRequest, CoverLetterResponse, ResumeTailorRequest, ResumeTailorResponse
 
 
 class TestTemplateMode:
@@ -111,10 +111,10 @@ class TestLLMMode:
         gen.generate(request)
 
         # Check the user prompt passed to chat contains resume text
-        call_args = mock_chat.call_args
-        user_prompt = call_args.kwargs.get("user_prompt") or call_args[1].get("user_prompt", "") or call_args[0][1] if call_args[0] else ""
-        # The resume should be included somewhere in the call
         mock_chat.assert_called_once()
+        call_args = mock_chat.call_args
+        user_prompt = call_args.kwargs.get("user_prompt", "")
+        assert "5 years experience" in user_prompt
 
     @patch("src.llm.client.LLMClient.chat")
     @patch("src.llm.client.LLMClient.is_configured", return_value=True)
@@ -129,6 +129,113 @@ class TestLLMMode:
         )
         gen.generate(request)
         mock_chat.assert_called_once()
+
+    @patch("src.llm.client.LLMClient.chat")
+    @patch("src.llm.client.LLMClient.is_configured", return_value=True)
+    def test_llm_uses_tone(self, mock_configured, mock_chat):
+        """LLM mode should pass the tone to the prompt."""
+        mock_chat.return_value = {"text": "Startup letter...", "tokens_used": 150}
+
+        gen = CoverLetterGenerator()
+        request = CoverLetterRequest(
+            company="Stripe",
+            role="SWE",
+            job_description="Build payments infra",
+            tone="conversational",
+            mode="llm",
+        )
+        gen.generate(request)
+
+        call_args = mock_chat.call_args
+        user_prompt = call_args.kwargs.get("user_prompt", "")
+        assert "conversational" in user_prompt
+
+    @patch("src.llm.client.LLMClient.chat")
+    @patch("src.llm.client.LLMClient.is_configured", return_value=True)
+    def test_llm_uses_extra_instructions(self, mock_configured, mock_chat):
+        """LLM mode should include extra instructions in the prompt."""
+        mock_chat.return_value = {"text": "Custom letter...", "tokens_used": 180}
+
+        gen = CoverLetterGenerator()
+        request = CoverLetterRequest(
+            company="AWS",
+            role="Cloud Architect",
+            job_description="Design cloud solutions",
+            extra_instructions="Mention my AWS Solutions Architect certification",
+            mode="llm",
+        )
+        gen.generate(request)
+
+        call_args = mock_chat.call_args
+        user_prompt = call_args.kwargs.get("user_prompt", "")
+        assert "AWS Solutions Architect" in user_prompt
+
+
+class TestResumeTailor:
+    """Test resume tailoring (with mocked OpenAI)."""
+
+    @patch("src.llm.client.LLMClient.chat")
+    @patch("src.llm.client.LLMClient.is_configured", return_value=True)
+    def test_tailor_returns_tailored_resume(self, mock_configured, mock_chat):
+        """Resume tailor should return modified resume and summary."""
+        mock_chat.side_effect = [
+            {"text": "Tailored resume content here...", "tokens_used": 500},
+            {"text": "- Reordered skills section\n- Added JD keywords", "tokens_used": 50},
+        ]
+
+        tailor = ResumeTailor()
+        request = ResumeTailorRequest(
+            company="Google",
+            role="SWE",
+            job_description="Build distributed systems with Go and Python",
+            resume_text="John Doe\nSoftware Engineer\n5 years experience in Python and Java",
+        )
+        result = tailor.tailor(request)
+
+        assert isinstance(result, ResumeTailorResponse)
+        assert "Tailored resume" in result.tailored_resume
+        assert "Reordered" in result.changes_summary
+        assert result.tokens_used == 550
+        assert mock_chat.call_count == 2
+
+    @patch("src.llm.client.LLMClient.chat")
+    @patch("src.llm.client.LLMClient.is_configured", return_value=True)
+    def test_tailor_with_focus_skills(self, mock_configured, mock_chat):
+        """Resume tailor should include focus skills in the prompt."""
+        mock_chat.side_effect = [
+            {"text": "Resume...", "tokens_used": 400},
+            {"text": "- Emphasized Python", "tokens_used": 40},
+        ]
+
+        tailor = ResumeTailor()
+        request = ResumeTailorRequest(
+            company="Meta",
+            role="MLE",
+            job_description="Build ML pipelines",
+            resume_text="Jane Doe\nML Engineer\n3 years PyTorch",
+            focus_skills=["Python", "PyTorch", "distributed training"],
+        )
+        tailor.tailor(request)
+
+        # First call is the main tailoring call
+        first_call = mock_chat.call_args_list[0]
+        user_prompt = first_call.kwargs.get("user_prompt", "")
+        assert "Python" in user_prompt
+        assert "PyTorch" in user_prompt
+
+    def test_tailor_requires_api_key(self):
+        """Resume tailor should raise error without API key."""
+        tailor = ResumeTailor()
+        tailor._llm._api_key = ""
+
+        request = ResumeTailorRequest(
+            company="Test",
+            role="Dev",
+            job_description="Build things",
+            resume_text="My resume...",
+        )
+        with pytest.raises(RuntimeError, match="OpenAI API key required"):
+            tailor.tailor(request)
 
 
 class TestCoverLetterAPI:
@@ -172,3 +279,38 @@ class TestCoverLetterAPI:
             "mode": "llm",
         })
         assert resp.status_code == 400
+
+    def test_invalid_tone(self, client):
+        """POST /cover-letter with invalid tone should return 400."""
+        resp = client.post("/cover-letter", json={
+            "company": "TestCo",
+            "role": "Engineer",
+            "job_description": "Build things",
+            "tone": "aggressive",
+            "mode": "template",
+        })
+        assert resp.status_code == 400
+
+    def test_resume_tailor_missing_resume(self, client):
+        """POST /tailor-resume without resume text should return 400."""
+        resp = client.post("/tailor-resume", json={
+            "company": "TestCo",
+            "role": "Engineer",
+            "job_description": "Build things",
+            "resume_text": "",
+        })
+        assert resp.status_code == 400
+
+
+class TestTonePresets:
+    """Test that tone presets are properly defined."""
+
+    def test_all_tones_exist(self):
+        assert "professional" in TONE_PRESETS
+        assert "conversational" in TONE_PRESETS
+        assert "technical" in TONE_PRESETS
+        assert "executive" in TONE_PRESETS
+
+    def test_tone_descriptions_not_empty(self):
+        for tone, desc in TONE_PRESETS.items():
+            assert len(desc) > 10, f"Tone '{tone}' has too short a description"

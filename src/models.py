@@ -86,6 +86,8 @@ class CoverLetterRequest(BaseModel):
     role: str
     job_description: str
     resume_text: str = ""
+    tone: str = "professional"  # professional, conversational, technical, executive
+    extra_instructions: str = ""  # user's custom instructions (e.g., "mention my AWS certs")
     mode: str = "llm"  # "template" or "llm"
 
 
@@ -93,4 +95,20 @@ class CoverLetterResponse(BaseModel):
     """Generated cover letter response."""
     cover_letter: str
     mode: str
+    tokens_used: int = 0
+
+
+class ResumeTailorRequest(BaseModel):
+    """Request to tailor a resume for a specific job."""
+    company: str
+    role: str
+    job_description: str
+    resume_text: str
+    focus_skills: list[str] = []  # skills to emphasize
+
+
+class ResumeTailorResponse(BaseModel):
+    """Tailored resume response."""
+    tailored_resume: str
+    changes_summary: str
     tokens_used: int = 0

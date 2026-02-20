@@ -557,7 +557,7 @@ def render_sites(df: pd.DataFrame):
 
 # --- Cover Letter Generator ---
 def render_cover_letter(df: pd.DataFrame, backend_url: str):
-    """Render cover letter generator UI."""
+    """Render cover letter generator UI with tone selection."""
     st.subheader("Cover Letter Generator")
     st.caption("Generate a tailored cover letter using AI (OpenAI GPT) or a basic template.")
 
@@ -572,7 +572,6 @@ def render_cover_letter(df: pd.DataFrame, backend_url: str):
         selected_job = st.selectbox("Select a tracked job", options=job_options)
 
         if selected_job != "-- Enter manually --":
-            # Parse company and role
             parts = selected_job.split(" — ", 1)
             company = parts[0] if len(parts) > 0 else ""
             role = parts[1] if len(parts) > 1 else ""
@@ -580,8 +579,8 @@ def render_cover_letter(df: pd.DataFrame, backend_url: str):
             company = ""
             role = ""
 
-        company = st.text_input("Company", value=company)
-        role = st.text_input("Role", value=role)
+        company = st.text_input("Company", value=company, key="cl_company")
+        role = st.text_input("Role", value=role, key="cl_role")
         job_description = st.text_area(
             "Job Description (paste the full JD)",
             height=200,
@@ -592,7 +591,17 @@ def render_cover_letter(df: pd.DataFrame, backend_url: str):
             height=150,
             placeholder="Paste your resume or key achievements to personalize further...",
         )
-        mode = st.radio("Generation Mode", ["llm", "template"], horizontal=True)
+
+        tone_col, mode_col = st.columns(2)
+        with tone_col:
+            tone = st.selectbox("Tone", ["professional", "conversational", "technical", "executive"])
+        with mode_col:
+            mode = st.radio("Mode", ["llm", "template"], horizontal=True)
+
+        extra_instructions = st.text_input(
+            "Extra instructions (optional)",
+            placeholder="e.g., mention my AWS certs, focus on ML experience...",
+        )
         generate_btn = st.button("Generate Cover Letter", type="primary")
 
     with col2:
@@ -612,9 +621,11 @@ def render_cover_letter(df: pd.DataFrame, backend_url: str):
                                 "role": role,
                                 "job_description": job_description,
                                 "resume_text": resume_text,
+                                "tone": tone,
+                                "extra_instructions": extra_instructions,
                                 "mode": mode,
                             },
-                            timeout=30.0,
+                            timeout=60.0,
                         )
                         if resp.status_code == 200:
                             data = resp.json()
@@ -625,10 +636,9 @@ def render_cover_letter(df: pd.DataFrame, backend_url: str):
                                 label_visibility="collapsed",
                             )
                             st.caption(
-                                f"Mode: {data['mode']} | "
+                                f"Mode: {data['mode']} | Tone: {tone} | "
                                 f"Tokens: {data.get('tokens_used', 0)}"
                             )
-                            # Copy button
                             st.code(data["cover_letter"], language=None)
                         else:
                             st.error(f"Error: {resp.status_code} — {resp.text}")
@@ -638,6 +648,95 @@ def render_cover_letter(df: pd.DataFrame, backend_url: str):
                         st.error(f"Error: {e}")
         else:
             st.info("Fill in the details and click 'Generate Cover Letter' to get started.")
+
+
+# --- Resume Tailor ---
+def render_resume_tailor(df: pd.DataFrame, backend_url: str):
+    """Render resume tailor UI."""
+    st.subheader("Resume Tailor")
+    st.caption("Paste your resume + a job description. AI will restructure your resume to maximize relevance and ATS score.")
+
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        # Select from tracked jobs or enter manually
+        job_options = ["-- Enter manually --"] + [
+            f"{row['company']} — {row['role']}" for _, row in df.iterrows()
+            if row.get("company")
+        ]
+        selected_job = st.selectbox("Select a tracked job", options=job_options, key="rt_job")
+
+        if selected_job != "-- Enter manually --":
+            parts = selected_job.split(" — ", 1)
+            company = parts[0] if len(parts) > 0 else ""
+            role = parts[1] if len(parts) > 1 else ""
+        else:
+            company = ""
+            role = ""
+
+        company = st.text_input("Company", value=company, key="rt_company")
+        role = st.text_input("Role", value=role, key="rt_role")
+        job_description = st.text_area(
+            "Job Description",
+            height=200,
+            placeholder="Paste the full job description...",
+            key="rt_jd",
+        )
+        resume_text = st.text_area(
+            "Your Current Resume (paste full text)",
+            height=250,
+            placeholder="Paste your entire resume here...",
+            key="rt_resume",
+        )
+        focus_skills = st.text_input(
+            "Priority skills to emphasize (comma-separated, optional)",
+            placeholder="e.g., Python, AWS, machine learning, system design",
+        )
+        tailor_btn = st.button("Tailor Resume", type="primary")
+
+    with col2:
+        st.markdown("**Tailored Resume:**")
+        if tailor_btn:
+            if not company or not role:
+                st.error("Company and Role are required.")
+            elif not job_description:
+                st.error("Job description is required.")
+            elif not resume_text:
+                st.error("Resume text is required.")
+            else:
+                with st.spinner("Tailoring your resume (this may take 15-30 seconds)..."):
+                    try:
+                        skills_list = [s.strip() for s in focus_skills.split(",") if s.strip()] if focus_skills else []
+                        resp = httpx.post(
+                            f"{backend_url}/tailor-resume",
+                            json={
+                                "company": company,
+                                "role": role,
+                                "job_description": job_description,
+                                "resume_text": resume_text,
+                                "focus_skills": skills_list,
+                            },
+                            timeout=120.0,
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            st.text_area(
+                                "Tailored Resume",
+                                value=data["tailored_resume"],
+                                height=400,
+                                label_visibility="collapsed",
+                            )
+                            st.caption(f"Tokens used: {data.get('tokens_used', 0)}")
+                            if data.get("changes_summary"):
+                                st.markdown("**Changes made:**")
+                                st.markdown(data["changes_summary"])
+                            st.code(data["tailored_resume"], language=None)
+                        else:
+                            st.error(f"Error: {resp.status_code} — {resp.text}")
+                    except httpx.ConnectError:
+                        st.error("Backend not reachable. Start it: `uvicorn backend.main:app --reload`")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
 
 # --- Main ---
@@ -660,8 +759,8 @@ def main():
     st.title("JobPilot Dashboard")
 
     # Main tabs
-    tab_overview, tab_table, tab_cover, tab_bots, tab_rules, tab_sites = st.tabs(
-        ["Overview", "Applications", "Cover Letter", "Bot Controls", "Email Rules", "Sites & Sources"]
+    tab_overview, tab_table, tab_cover, tab_resume, tab_bots, tab_rules, tab_sites = st.tabs(
+        ["Overview", "Applications", "Cover Letter", "Resume Tailor", "Bot Controls", "Email Rules", "Sites & Sources"]
     )
 
     with tab_overview:
@@ -674,6 +773,9 @@ def main():
 
     with tab_cover:
         render_cover_letter(df, backend_url)
+
+    with tab_resume:
+        render_resume_tailor(df, backend_url)
 
     with tab_bots:
         render_bot_controls()
