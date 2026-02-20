@@ -264,3 +264,60 @@ Print this at the end for a complete development history.
 - **70/70 tests passing**: 14 backend + 24 email rules + 12 orchestrator + 11 reminder + 9 cover letter
 
 ---
+
+## 2026-02-19 — Milestone 9: Discovery Bot (4 iterations)
+
+### Discovery v1 (fc8e814)
+- Basic RSS/API fetcher with 30 sources
+- feedparser for RSS, httpx for APIs
+- JobPreferences + keyword-based scoring
+- SQLite database with basic fields
+
+### Discovery v2 (b6cf3b9)
+- Expanded to 182 sources (131 Greenhouse + 46 Lever + 5 boards)
+- Keyword-based job parser (no GPT) — detects category, level, skills, salary, remote
+- LinkedIn-level search filters (category, level, years, job type, remote, keyword, company)
+- 41 tests
+
+### Discovery v3 (5b412bf)
+- Expanded to 297 sources (+115: quant finance, gaming, healthcare, education, consulting)
+- Company name normalization (suffix stripping + alias resolution)
+- Fingerprint-based dedup (md5 of normalized title+company+location)
+- ETag/If-Modified-Since caching for efficient re-fetching
+- Per-source stats tracking with ETag metadata
+- Dashboard upgrade: sort dropdown, clickable URLs, job detail panel, apply/save/dismiss buttons
+- API endpoints: GET /discovery/jobs/{id}, POST /discovery/jobs/{id}/apply, GET /discovery/sources, GET /discovery/companies
+- 137 tests
+
+### Discovery v4 (1447d90)
+- FTS5 full-text search virtual table (title, company, description, skills, location)
+- Adaptive scheduling: dynamic fetch intervals based on source productivity/errors
+  - 3+ errors → 360 min, dry → 240 min, productive → 60 min, default 120 min
+- ATS job_id extraction from Greenhouse/Lever/Ashby URLs for cross-source dedup
+- Newness window tracking: first_seen_at, last_seen_at for truly new job detection
+- 3-pass dedup in bot: URL → ATS job_id → fingerprint
+- API endpoints: GET /discovery/search (FTS), /new (recent), /stale (closed jobs)
+- 159 tests (22 new: ATS extraction, adaptive scheduling, FTS5, newness, ATS dedup)
+
+### Design Decisions (Discovery)
+- RSS + API only (no browser scraping) — reliable, fast, doesn't violate ToS
+- SQLite with WAL mode for concurrent access
+- Content-external FTS5 with 'rebuild' command (not manual INSERT)
+- Adaptive scheduling prevents hammering dead sources while keeping productive ones fresh
+- 3-pass dedup catches: exact URL, same ATS job across aggregators, same job with different URLs
+- Company normalization handles: "Stripe Inc" = "Stripe", "Facebook" = "Meta"
+
+### Roadmap Created
+- Full master roadmap at docs/ROADMAP.md covering M10-M15
+- M10: ML Scoring Layer (embeddings, skill extraction, title normalization)
+- M11: CRM + Contact Database (people, threads, cooldowns)
+- M12: Hiring Signal Engine (news/press/funding/WARN classification)
+- M13: Outreach Copilot (draft messages, sequences, A/B testing)
+- M14: Referral Discovery (contact graph, closeness scoring)
+- M15: Supervisor Dashboard (unified command center, learn from outcomes)
+- Architecture doc updated with target state diagram
+
+### Test Results
+- **159/159 tests passing**: 14 backend + 89 discovery + 24 email + 12 orchestrator + 11 reminder + 9 cover letter
+
+---
