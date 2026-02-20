@@ -20,7 +20,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from backend.middleware import RequestLoggingMiddleware
-from backend.routers import cover_letter, discovery, health, jobs
+from backend.routers import analysis, cover_letter, discovery, health, jobs
 from src.utils.logging import get_logger
 
 logger = get_logger("backend.main")
@@ -58,6 +58,7 @@ app.include_router(health.router)
 app.include_router(jobs.router)
 app.include_router(cover_letter.router)
 app.include_router(discovery.router)
+app.include_router(analysis.router)
 
 
 @app.exception_handler(Exception)

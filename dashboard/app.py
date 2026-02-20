@@ -5,9 +5,12 @@ Full-featured dashboard with:
 - Status distribution, source breakdown, application timeline charts
 - Response rate & conversion funnel
 - Job table with filtering, sorting, inline status updates
+- Job Discovery with score colors, skill gaps, JD analysis, resume suggestion
+- My Resumes — upload, parse, view skill inventory
 - Bot Control Center — start/stop individual bots
 - Email Classification Rules — view, add, modify rules
 - Sites/Sources tracker
+- DB Health widget in sidebar
 
 Run: streamlit run dashboard/app.py
 """
@@ -49,6 +52,43 @@ STATUS_COLORS = {
     "Withdrawn": "#78716c",
     "Archived": "#d1d5db",
 }
+
+
+def score_color(score: float) -> str:
+    """Return color based on match score: green >= 0.7, yellow >= 0.4, red < 0.4."""
+    if score >= 0.7:
+        return "#22c55e"
+    elif score >= 0.4:
+        return "#f59e0b"
+    return "#ef4444"
+
+
+def score_badge(score: float) -> str:
+    """Return an HTML badge string for a match score."""
+    color = score_color(score)
+    return f'<span style="background:{color};color:#fff;padding:2px 8px;border-radius:4px;font-weight:bold">{score:.0%}</span>'
+
+
+def confidence_badge(confidence: float) -> str:
+    """Return an HTML badge for JD confidence level."""
+    if confidence >= 0.7:
+        label, color = "High", "#22c55e"
+    elif confidence >= 0.4:
+        label, color = "Medium", "#f59e0b"
+    else:
+        label, color = "Low", "#ef4444"
+    return f'<span style="background:{color};color:#fff;padding:2px 8px;border-radius:4px;font-size:0.8em">{label} ({confidence:.0%})</span>'
+
+
+def skill_tags_html(skills: list[str], color: str = "#3b82f6") -> str:
+    """Return HTML for skill tags."""
+    if not skills:
+        return ""
+    tags = " ".join(
+        f'<span style="background:{color};color:#fff;padding:1px 6px;border-radius:3px;font-size:0.8em;margin:1px">{s}</span>'
+        for s in skills
+    )
+    return tags
 
 
 # --- Data Fetching ---
@@ -153,6 +193,47 @@ def render_sidebar():
     if st.sidebar.button("Refresh Data"):
         st.cache_data.clear()
         st.rerun()
+
+    # DB Health Widget
+    st.sidebar.divider()
+    st.sidebar.subheader("System Health")
+    try:
+        health_resp = httpx.get(f"{backend_url}/analysis/health", timeout=5.0)
+        if health_resp.status_code == 200:
+            health = health_resp.json()
+
+            # Discovery DB
+            disc_db = health.get("discovery_db", {})
+            if disc_db.get("exists"):
+                st.sidebar.caption(f"Discovery DB: {disc_db.get('size_mb', 0):.1f} MB")
+            else:
+                st.sidebar.caption("Discovery DB: not created yet")
+
+            # Resume count
+            st.sidebar.caption(f"Resumes stored: {health.get('resume_count', 0)}")
+
+            # Backup status
+            backup = health.get("backup", {})
+            backup_status = backup.get("status", "unknown")
+            if backup_status == "ok":
+                st.sidebar.success(f"Backup: OK ({backup.get('backup_count', 0)} backups)")
+            elif backup_status == "warning":
+                st.sidebar.warning(f"Backup: {backup.get('hours_since_backup', '?')}h ago")
+            elif backup_status == "critical":
+                st.sidebar.error("Backup: No backups found!")
+            else:
+                st.sidebar.caption("Backup: unknown")
+
+            # Retention stats
+            retention = health.get("retention", {})
+            if retention:
+                active = retention.get("total_active", 0)
+                archived = retention.get("total_archived", 0)
+                st.sidebar.caption(f"Active jobs: {active:,} | Archived: {archived:,}")
+        else:
+            st.sidebar.caption("Health check unavailable")
+    except Exception:
+        st.sidebar.caption("Health: backend unreachable")
 
     return backend_url
 
@@ -748,9 +829,9 @@ def render_resume_tailor(df: pd.DataFrame, backend_url: str):
 
 # --- Job Discovery ---
 def render_discovery(backend_url: str):
-    """Render job discovery browser with LinkedIn-level filtering, sorting, and apply tracking."""
+    """Render job discovery browser with score colors, skill gaps, JD analysis, and resume suggestion."""
     st.subheader("Job Discovery")
-    st.caption("Browse 1000s of jobs discovered from 260+ sources. Filter, sort, and apply.")
+    st.caption("Browse jobs discovered from 260+ sources. Color-coded scores, skill gap analysis, and resume suggestions.")
 
     # Filters row 1
     f1, f2, f3, f4, f5 = st.columns(5)
@@ -793,6 +874,12 @@ def render_discovery(backend_url: str):
                                     "title": "Title A-Z",
                                 }.get(x, x))
 
+    # Pagination controls
+    page_col1, page_col2 = st.columns([1, 5])
+    with page_col1:
+        page = st.number_input("Page", min_value=1, value=1, step=1, key="disc_page")
+    per_page = 50
+
     # Fetch from discovery API
     try:
         params = {
@@ -800,7 +887,8 @@ def render_discovery(backend_url: str):
             "years_min": years_range[0], "years_max": years_range[1],
             "job_type": job_type, "remote_type": remote,
             "keyword": keyword, "company": company_filter,
-            "status": status_filter, "sort_by": sort_by, "per_page": 100,
+            "status": status_filter, "sort_by": sort_by,
+            "page": page, "per_page": per_page,
         }
         params = {k: v for k, v in params.items() if v}  # Remove empty
         resp = httpx.get(f"{backend_url}/discovery/jobs", params=params, timeout=10.0)
@@ -809,11 +897,18 @@ def render_discovery(backend_url: str):
             data = resp.json()
             total = data.get("total", 0)
             disc_jobs = data.get("jobs", [])
+            total_pages = max(1, (total + per_page - 1) // per_page)
 
-            st.caption(f"Showing {len(disc_jobs)} of {total} discovered jobs")
+            st.caption(f"Showing {len(disc_jobs)} of {total:,} discovered jobs (page {page}/{total_pages})")
 
             if disc_jobs:
                 disc_df = pd.DataFrame(disc_jobs)
+
+                # Add score color column for display
+                if "match_score" in disc_df.columns:
+                    disc_df["score_display"] = disc_df["match_score"].apply(
+                        lambda x: f"{'***' if x >= 0.7 else '**' if x >= 0.4 else '*'} {x:.0%}"
+                    )
 
                 # Main table with clickable URLs
                 display_cols = ["title", "company", "url", "category", "experience_level",
@@ -831,11 +926,26 @@ def render_discovery(backend_url: str):
                         "category": st.column_config.TextColumn("Category", width="small"),
                         "experience_level": st.column_config.TextColumn("Level", width="small"),
                         "remote_type": st.column_config.TextColumn("Remote", width="small"),
-                        "match_score": st.column_config.NumberColumn("Score", format="%.2f", width="small"),
+                        "match_score": st.column_config.ProgressColumn(
+                            "Score", min_value=0.0, max_value=1.0, format="%.0%%", width="small",
+                        ),
                         "skills": st.column_config.TextColumn("Skills", width="large"),
                         "status": st.column_config.TextColumn("Status", width="small"),
                     },
                 )
+
+                # Pagination navigation
+                nav_cols = st.columns(5)
+                with nav_cols[1]:
+                    if page > 1:
+                        if st.button("Previous Page", key="disc_prev"):
+                            st.session_state["disc_page"] = page - 1
+                            st.rerun()
+                with nav_cols[3]:
+                    if page < total_pages:
+                        if st.button("Next Page", key="disc_next"):
+                            st.session_state["disc_page"] = page + 1
+                            st.rerun()
 
                 # --- Job Details + Apply Section ---
                 st.divider()
@@ -845,7 +955,9 @@ def render_discovery(backend_url: str):
                 job_labels = {}
                 if "id" in disc_df.columns:
                     for _, row in disc_df.iterrows():
-                        label = f"{row.get('title', '?')} @ {row.get('company', '?')} [{row['id']}]"
+                        score = row.get("match_score", 0)
+                        indicator = "+" if score >= 0.7 else "~" if score >= 0.4 else "-"
+                        label = f"[{indicator}{score:.0%}] {row.get('title', '?')} @ {row.get('company', '?')}"
                         job_labels[label] = row["id"]
 
                 sel_col, act_col, parse_col = st.columns([3, 2, 1])
@@ -900,6 +1012,10 @@ def render_discovery(backend_url: str):
                             )
                             if job_url:
                                 st.markdown(f"**[Open Application Page]({job_url})**")
+
+                            # Suggest best resume
+                            _show_resume_suggestion(backend_url, result.get("title", ""), "")
+
                             st.rerun()
                     except Exception as e:
                         st.error(str(e))
@@ -914,35 +1030,9 @@ def render_discovery(backend_url: str):
                     except Exception as e:
                         st.error(str(e))
 
-                # Show job details when selected
+                # Show job details + JD analysis when selected
                 if selected:
-                    try:
-                        detail_resp = httpx.get(f"{backend_url}/discovery/jobs/{selected}", timeout=5.0)
-                        if detail_resp.status_code == 200:
-                            job = detail_resp.json()
-                            st.divider()
-                            st.subheader(f"{job.get('title', '')} — {job.get('company', '')}")
-                            detail_cols = st.columns(4)
-                            detail_cols[0].markdown(f"**Category:** {job.get('category', 'N/A').replace('_', ' ').title()}")
-                            detail_cols[1].markdown(f"**Level:** {job.get('experience_level', 'N/A').title()}")
-                            detail_cols[2].markdown(f"**Type:** {job.get('job_type', 'N/A').replace('_', ' ').title()}")
-                            detail_cols[3].markdown(f"**Remote:** {job.get('remote_type', 'N/A').title()}")
-
-                            info_cols = st.columns(4)
-                            info_cols[0].markdown(f"**Score:** {job.get('match_score', 0):.2f}")
-                            info_cols[1].markdown(f"**Location:** {job.get('location', 'N/A')}")
-                            info_cols[2].markdown(f"**Source:** {job.get('source_name', 'N/A')}")
-                            info_cols[3].markdown(f"**Status:** {job.get('status', 'new').title()}")
-
-                            if job.get("skills"):
-                                st.markdown(f"**Skills:** {job['skills']}")
-                            if job.get("url"):
-                                st.markdown(f"**Apply:** [{job['url']}]({job['url']})")
-                            if job.get("description"):
-                                with st.expander("Full Description", expanded=False):
-                                    st.write(job["description"][:3000])
-                    except Exception:
-                        pass
+                    _render_job_detail(backend_url, selected)
 
             else:
                 st.info("No discovered jobs match your filters. Run the Discovery Bot first.")
@@ -955,13 +1045,328 @@ def render_discovery(backend_url: str):
             if stats_resp.status_code == 200:
                 stats = stats_resp.json()
                 st.divider()
-                s1, s2, s3, s4 = st.columns(4)
-                s1.metric("Total Discovered", stats.get("total", 0))
-                s2.metric("Parsed", stats.get("parsed", 0))
-                s3.metric("Unparsed", stats.get("unparsed", 0))
+                s1, s2, s3, s4, s5 = st.columns(5)
+                s1.metric("Total Discovered", f"{stats.get('total', 0):,}")
+                s2.metric("Parsed", f"{stats.get('parsed', 0):,}")
+                s3.metric("Unparsed", f"{stats.get('unparsed', 0):,}")
                 s4.metric("Categories", len(stats.get("by_category", {})))
+                by_status = stats.get("by_status", {})
+                s5.metric("Saved", by_status.get("saved", 0))
         except Exception:
             pass
+
+    except httpx.ConnectError:
+        st.error("Backend not reachable.")
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+
+def _render_job_detail(backend_url: str, job_id: str):
+    """Render expanded job detail with JD analysis, skill gaps, and resume suggestion."""
+    try:
+        detail_resp = httpx.get(f"{backend_url}/discovery/jobs/{job_id}", timeout=5.0)
+        if detail_resp.status_code != 200:
+            return
+        job = detail_resp.json()
+
+        st.divider()
+        st.subheader(f"{job.get('title', '')} — {job.get('company', '')}")
+
+        # Row 1: metadata with score badge
+        score = job.get("match_score", 0)
+        detail_cols = st.columns(5)
+        detail_cols[0].markdown(f"**Score:** {score_badge(score)}", unsafe_allow_html=True)
+        detail_cols[1].markdown(f"**Category:** {job.get('category', 'N/A').replace('_', ' ').title()}")
+        detail_cols[2].markdown(f"**Level:** {job.get('experience_level', 'N/A').title()}")
+        detail_cols[3].markdown(f"**Type:** {job.get('job_type', 'N/A').replace('_', ' ').title()}")
+        detail_cols[4].markdown(f"**Remote:** {job.get('remote_type', 'N/A').title()}")
+
+        info_cols = st.columns(4)
+        info_cols[0].markdown(f"**Location:** {job.get('location', 'N/A')}")
+        info_cols[1].markdown(f"**Source:** {job.get('source_name', 'N/A')}")
+        info_cols[2].markdown(f"**Status:** {job.get('status', 'new').title()}")
+        info_cols[3].markdown(f"**First seen:** {job.get('first_seen_at', 'N/A')[:10]}")
+
+        # Skills display
+        skills_str = job.get("skills", "")
+        if skills_str:
+            skill_list = [s.strip() for s in skills_str.split(",") if s.strip()]
+            st.markdown(f"**Skills:** {skill_tags_html(skill_list)}", unsafe_allow_html=True)
+
+        # Apply link (always prominent)
+        if job.get("url"):
+            st.markdown(f"**[Open Job Posting]({job['url']})**")
+
+        # JD Analysis panel
+        description = job.get("description", "")
+        if description:
+            with st.expander("JD Analysis", expanded=False):
+                _render_jd_analysis(backend_url, job.get("title", ""), description)
+
+            with st.expander("Full Description", expanded=False):
+                st.write(description[:5000])
+
+        # Resume suggestion
+        with st.expander("Best Resume for This Job", expanded=False):
+            _show_resume_suggestion(backend_url, job.get("title", ""), description)
+
+    except Exception:
+        pass
+
+
+def _render_jd_analysis(backend_url: str, title: str, description: str):
+    """Render JD normalization analysis inside an expander."""
+    try:
+        resp = httpx.post(
+            f"{backend_url}/analysis/normalize-jd",
+            json={"title": title, "description": description},
+            timeout=15.0,
+        )
+        if resp.status_code != 200:
+            st.caption("JD analysis unavailable")
+            return
+
+        jd = resp.json()
+
+        # Confidence badge
+        st.markdown(
+            f"**JD Confidence:** {confidence_badge(jd.get('confidence', 0))}",
+            unsafe_allow_html=True,
+        )
+
+        # Title normalization
+        col1, col2, col3 = st.columns(3)
+        col1.markdown(f"**Normalized title:** {jd.get('title_norm', 'N/A').replace('_', ' ').title()}")
+        col2.markdown(f"**Seniority:** {jd.get('seniority_level', 'N/A').title()}")
+        col3.markdown(f"**Location type:** {jd.get('location_type', 'N/A').title()}")
+
+        # Must-have vs nice-to-have skills
+        must_have = jd.get("must_have_skills", [])
+        nice_to_have = jd.get("nice_to_have_skills", [])
+
+        if must_have:
+            st.markdown(
+                f"**Must-have skills:** {skill_tags_html(must_have, '#ef4444')}",
+                unsafe_allow_html=True,
+            )
+        if nice_to_have:
+            st.markdown(
+                f"**Nice-to-have:** {skill_tags_html(nice_to_have, '#6b7280')}",
+                unsafe_allow_html=True,
+            )
+
+        # Responsibilities
+        responsibilities = jd.get("responsibilities", [])
+        if responsibilities:
+            st.markdown("**Key responsibilities:**")
+            for r in responsibilities[:6]:
+                st.markdown(f"- {r}")
+
+        # Skill categories
+        cats = jd.get("skill_categories", {})
+        if cats:
+            st.markdown("**Skill categories:**")
+            cat_text = " | ".join(f"**{k}:** {', '.join(v)}" for k, v in cats.items() if v)
+            st.markdown(cat_text)
+
+    except Exception as e:
+        st.caption(f"JD analysis error: {e}")
+
+
+def _show_resume_suggestion(backend_url: str, title: str, description: str):
+    """Show best resume suggestion for a job."""
+    if not title:
+        st.caption("No job title to score against.")
+        return
+
+    try:
+        resp = httpx.post(
+            f"{backend_url}/analysis/suggest-resume",
+            json={"title": title, "description": description or title},
+            timeout=20.0,
+        )
+        if resp.status_code != 200:
+            st.caption("Resume suggestion unavailable")
+            return
+
+        data = resp.json()
+        suggestion = data.get("suggestion")
+        if not suggestion:
+            st.info("No resumes uploaded yet. Go to 'My Resumes' tab to upload your first resume.")
+            return
+
+        st.markdown(
+            f"**Best resume:** {suggestion['resume_name']} "
+            f"— {score_badge(suggestion['match_score'])}",
+            unsafe_allow_html=True,
+        )
+
+        if suggestion.get("missing_must_haves"):
+            st.markdown(
+                f"**Missing skills:** {skill_tags_html(suggestion['missing_must_haves'], '#ef4444')}",
+                unsafe_allow_html=True,
+            )
+
+        if suggestion.get("matched_skills"):
+            st.markdown(
+                f"**Matched:** {skill_tags_html(suggestion['matched_skills'][:10], '#22c55e')}",
+                unsafe_allow_html=True,
+            )
+
+        st.caption(f"Recommendation: {suggestion.get('recommended_emphasis', 'N/A').replace('_', ' ').title()}")
+
+        # Show all resumes if more than one
+        all_scores = data.get("all_scores", [])
+        if len(all_scores) > 1:
+            st.markdown("**All resumes ranked:**")
+            for i, s in enumerate(all_scores):
+                marker = " (best)" if i == 0 else ""
+                st.markdown(
+                    f"{i+1}. {s['resume_name']}: {score_badge(s['match_score'])}{marker}",
+                    unsafe_allow_html=True,
+                )
+
+    except Exception:
+        st.caption("Resume suggestion: backend unreachable")
+
+
+# --- My Resumes ---
+def render_my_resumes(backend_url: str):
+    """Render resume management tab — upload, parse, view skill inventory, set default."""
+    st.subheader("My Resumes")
+    st.caption("Upload your resumes to get skill inventories, match scores, and personalized suggestions when applying.")
+
+    # Upload section
+    with st.expander("Upload New Resume", expanded=True):
+        with st.form("upload_resume_form"):
+            resume_name = st.text_input(
+                "Resume Name *",
+                placeholder="e.g., Backend Engineer Resume, ML Resume v2...",
+            )
+            resume_text = st.text_area(
+                "Paste Resume Text *",
+                height=300,
+                placeholder="Paste the full text of your resume here...",
+            )
+            is_default = st.checkbox("Set as default resume", value=False)
+            upload_btn = st.form_submit_button("Upload & Parse", type="primary")
+
+        if upload_btn:
+            if not resume_name or not resume_text.strip():
+                st.error("Resume name and text are required.")
+            else:
+                with st.spinner("Parsing resume..."):
+                    try:
+                        resp = httpx.post(
+                            f"{backend_url}/analysis/resumes/upload",
+                            json={
+                                "name": resume_name,
+                                "raw_text": resume_text,
+                                "is_default": is_default,
+                            },
+                            timeout=30.0,
+                        )
+                        if resp.status_code == 200:
+                            st.success(f"Resume '{resume_name}' uploaded and parsed!")
+                            st.rerun()
+                        else:
+                            st.error(f"Error: {resp.status_code} — {resp.text}")
+                    except httpx.ConnectError:
+                        st.error("Backend not reachable.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+    st.divider()
+
+    # List existing resumes
+    try:
+        resp = httpx.get(f"{backend_url}/analysis/resumes", timeout=10.0)
+        if resp.status_code != 200:
+            st.warning("Could not fetch resumes.")
+            return
+
+        resumes = resp.json().get("resumes", [])
+        if not resumes:
+            st.info("No resumes uploaded yet. Upload your first resume above.")
+            return
+
+        st.subheader(f"Stored Resumes ({len(resumes)})")
+
+        for resume in resumes:
+            default_marker = " (DEFAULT)" if resume.get("is_default") else ""
+            with st.expander(f"**{resume['name']}**{default_marker} — {resume.get('total_bullets', 0)} bullets, {resume.get('total_metrics', 0)} metrics"):
+                # Skill inventory
+                skills = resume.get("skill_inventory", [])
+                if skills:
+                    st.markdown(
+                        f"**Skill Inventory ({len(skills)}):** {skill_tags_html(skills)}",
+                        unsafe_allow_html=True,
+                    )
+
+                # Skill categories
+                categories = resume.get("skill_categories", {})
+                if categories:
+                    st.markdown("**Skills by Category:**")
+                    for cat, cat_skills in sorted(categories.items()):
+                        if cat_skills:
+                            st.markdown(
+                                f"- **{cat.replace('_', ' ').title()}:** {skill_tags_html(cat_skills, '#6b7280')}",
+                                unsafe_allow_html=True,
+                            )
+
+                # Stats
+                stat_cols = st.columns(4)
+                stat_cols[0].metric("Skills", len(skills))
+                stat_cols[1].metric("Bullets", resume.get("total_bullets", 0))
+                stat_cols[2].metric("Metrics", resume.get("total_metrics", 0))
+                stat_cols[3].metric("Categories", len(categories))
+
+                # Actions
+                action_cols = st.columns(3)
+                with action_cols[0]:
+                    if not resume.get("is_default"):
+                        if st.button("Set as Default", key=f"def_{resume['id']}"):
+                            try:
+                                r = httpx.patch(
+                                    f"{backend_url}/analysis/resumes/{resume['id']}/default",
+                                    timeout=5.0,
+                                )
+                                if r.status_code == 200:
+                                    st.success("Set as default!")
+                                    st.rerun()
+                            except Exception as e:
+                                st.error(str(e))
+                    else:
+                        st.caption("This is your default resume")
+
+                with action_cols[1]:
+                    # View full parsed data
+                    if st.button("View Full Parse", key=f"view_{resume['id']}"):
+                        try:
+                            detail = httpx.get(
+                                f"{backend_url}/analysis/resumes/{resume['id']}",
+                                timeout=5.0,
+                            ).json()
+                            parsed = detail.get("parsed_json", {})
+                            if parsed:
+                                st.json(parsed)
+                        except Exception as e:
+                            st.error(str(e))
+
+                with action_cols[2]:
+                    if st.button("Delete", key=f"del_{resume['id']}"):
+                        try:
+                            r = httpx.delete(
+                                f"{backend_url}/analysis/resumes/{resume['id']}",
+                                timeout=5.0,
+                            )
+                            if r.status_code == 200:
+                                st.success("Deleted!")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+
+                st.caption(f"Uploaded: {resume.get('created_at', 'N/A')[:10]}")
 
     except httpx.ConnectError:
         st.error("Backend not reachable.")
@@ -977,10 +1382,12 @@ def main():
     if not jobs:
         st.title("JobPilot Dashboard")
         st.info("No jobs tracked yet. Add your first job from the sidebar, Chrome extension, or CLI.")
-        # Still show discovery and bot controls even with no tracked jobs
-        tab_disc, tab_bots = st.tabs(["Job Discovery", "Bot Controls"])
+        # Still show discovery, resumes, and bot controls even with no tracked jobs
+        tab_disc, tab_resumes, tab_bots = st.tabs(["Job Discovery", "My Resumes", "Bot Controls"])
         with tab_disc:
             render_discovery(backend_url)
+        with tab_resumes:
+            render_my_resumes(backend_url)
         with tab_bots:
             render_bot_controls()
         return
@@ -993,10 +1400,11 @@ def main():
 
     st.title("JobPilot Dashboard")
 
-    # Main tabs — 8 tabs now
-    tab_overview, tab_disc, tab_table, tab_cover, tab_resume, tab_bots, tab_rules, tab_sites = st.tabs(
-        ["Overview", "Job Discovery", "Applications", "Cover Letter", "Resume Tailor",
-         "Bot Controls", "Email Rules", "Sites & Sources"]
+    # Main tabs — 9 tabs now
+    (tab_overview, tab_disc, tab_table, tab_my_resumes,
+     tab_cover, tab_resume, tab_bots, tab_rules, tab_sites) = st.tabs(
+        ["Overview", "Job Discovery", "Applications", "My Resumes",
+         "Cover Letter", "Resume Tailor", "Bot Controls", "Email Rules", "Sites & Sources"]
     )
 
     with tab_overview:
@@ -1009,6 +1417,9 @@ def main():
 
     with tab_table:
         render_table(df, backend_url)
+
+    with tab_my_resumes:
+        render_my_resumes(backend_url)
 
     with tab_cover:
         render_cover_letter(df, backend_url)
