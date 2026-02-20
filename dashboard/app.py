@@ -1497,6 +1497,228 @@ def render_signals(backend_url: str):
                     st.error(f"Error: {e}")
 
 
+# --- Outreach ---
+def render_outreach(backend_url: str):
+    """Outreach tab — draft approval, A/B stats, sequence status."""
+    st.subheader("Outreach Copilot")
+    st.caption("Bot drafts personalized emails. You approve before anything sends.")
+
+    out_tab1, out_tab2, out_tab3, out_tab4 = st.tabs(
+        ["Pending Drafts", "Sequences", "A/B Stats", "New Sequence"]
+    )
+
+    # ----------------------------------------------------------------
+    # Tab 1: Pending Drafts
+    # ----------------------------------------------------------------
+    with out_tab1:
+        st.markdown("#### Drafts Awaiting Your Approval")
+        st.info("Review each draft below. Nothing sends until you click **Approve**.")
+
+        try:
+            r = requests.get(f"{backend_url}/outreach/drafts?status=pending&limit=50", timeout=10)
+            drafts = r.json().get("drafts", []) if r.ok else []
+        except Exception:
+            drafts = []
+
+        if not drafts:
+            st.success("No pending drafts — inbox clean!")
+        else:
+            for draft in drafts:
+                with st.expander(
+                    f"[{draft['stage'].upper()}] {draft['contact_email']} @ {draft.get('company','?')} — {draft['subject'][:60]}",
+                    expanded=False,
+                ):
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        new_subject = st.text_input("Subject", value=draft["subject"], key=f"subj_{draft['id']}")
+                        new_body = st.text_area("Body", value=draft["body"], height=200, key=f"body_{draft['id']}")
+                    with col2:
+                        st.metric("Stage", draft["stage"])
+                        st.metric("Variant", draft.get("variant_id", "A"))
+                        st.metric("Words", len(draft["body"].split()))
+                        st.caption(f"Drafted by: {draft.get('drafted_by','template')}")
+
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        if st.button("✅ Approve", key=f"approve_{draft['id']}"):
+                            # Save edits then approve
+                            if new_subject != draft["subject"] or new_body != draft["body"]:
+                                requests.put(
+                                    f"{backend_url}/outreach/drafts/{draft['id']}",
+                                    json={"subject": new_subject, "body": new_body},
+                                    timeout=10,
+                                )
+                            requests.post(f"{backend_url}/outreach/drafts/{draft['id']}/approve", timeout=10)
+                            st.success("Approved!")
+                            st.rerun()
+                    with c2:
+                        if st.button("❌ Reject", key=f"reject_{draft['id']}"):
+                            requests.post(
+                                f"{backend_url}/outreach/drafts/{draft['id']}/reject",
+                                json={"notes": "rejected via dashboard"},
+                                timeout=10,
+                            )
+                            st.warning("Rejected.")
+                            st.rerun()
+                    with c3:
+                        if st.button("💾 Save Edits", key=f"edit_{draft['id']}"):
+                            requests.put(
+                                f"{backend_url}/outreach/drafts/{draft['id']}",
+                                json={"subject": new_subject, "body": new_body},
+                                timeout=10,
+                            )
+                            st.info("Saved.")
+
+    # ----------------------------------------------------------------
+    # Tab 2: Sequences
+    # ----------------------------------------------------------------
+    with out_tab2:
+        st.markdown("#### Active Sequences")
+
+        status_filter = st.selectbox("Filter by status", ["all", "active", "replied", "cold", "completed"], key="seq_status")
+        try:
+            url = f"{backend_url}/outreach/sequences?limit=100"
+            if status_filter != "all":
+                url += f"&status={status_filter}"
+            r = requests.get(url, timeout=10)
+            seqs = r.json().get("sequences", []) if r.ok else []
+        except Exception:
+            seqs = []
+
+        if not seqs:
+            st.info("No sequences yet.")
+        else:
+            seq_data = [
+                {
+                    "Contact": s.get("contact_email", ""),
+                    "Company": s.get("company", ""),
+                    "Stage": s.get("current_stage", ""),
+                    "Status": s.get("status", ""),
+                    "Next Due": (s.get("next_due_at") or "")[:10],
+                    "Last Sent": (s.get("last_sent_at") or "")[:10],
+                    "Replied": "✅" if s.get("reply_received") else "—",
+                    "ID": s.get("id", ""),
+                }
+                for s in seqs
+            ]
+            st.dataframe(seq_data, use_container_width=True)
+
+            st.markdown("---")
+            mark_replied_id = st.text_input("Mark sequence as replied (enter sequence ID):", key="mark_replied_id")
+            if st.button("Mark Replied", key="btn_mark_replied") and mark_replied_id:
+                r = requests.post(f"{backend_url}/outreach/sequences/{mark_replied_id}/replied", timeout=10)
+                if r.ok:
+                    st.success("Marked as replied!")
+                    st.rerun()
+                else:
+                    st.error(f"Error: {r.text}")
+
+    # ----------------------------------------------------------------
+    # Tab 3: A/B Stats
+    # ----------------------------------------------------------------
+    with out_tab3:
+        st.markdown("#### A/B Variant Performance")
+        try:
+            r = requests.get(f"{backend_url}/outreach/variants", timeout=10)
+            variants = r.json().get("variants", []) if r.ok else []
+        except Exception:
+            variants = []
+
+        try:
+            r2 = requests.get(f"{backend_url}/outreach/stats", timeout=10)
+            stats = r2.json() if r2.ok else {}
+        except Exception:
+            stats = {}
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Active Sequences", stats.get("active_sequences", 0))
+        m2.metric("Replied", stats.get("replied", 0))
+        m3.metric("Pending Drafts", stats.get("pending_drafts", 0))
+        m4.metric("Reply Rate", f"{stats.get('reply_rate', 0):.0%}")
+
+        st.markdown("---")
+        if not variants:
+            st.info("No A/B data yet — variants are tracked after sends.")
+        else:
+            vdf = pd.DataFrame([
+                {
+                    "Stage": v["stage"],
+                    "Variant": v["variant_label"],
+                    "Template": v.get("template_name", ""),
+                    "Sends": v["sends"],
+                    "Replies": v["replies"],
+                    "Reply Rate": f"{v['reply_rate']:.0%}",
+                }
+                for v in variants
+            ])
+            st.dataframe(vdf, use_container_width=True)
+
+    # ----------------------------------------------------------------
+    # Tab 4: New Sequence
+    # ----------------------------------------------------------------
+    with out_tab4:
+        st.markdown("#### Start a New Outreach Sequence")
+        st.caption("Enter a contact's details to begin a 3-touch sequence (Day 0 / Day 3 / Day 7).")
+
+        with st.form("new_sequence_form"):
+            contact_id = st.text_input("Contact ID (from CRM, or enter email as ID):")
+            contact_email = st.text_input("Contact Email *:")
+            contact_name = st.text_input("Contact Name:")
+            company = st.text_input("Company:")
+            job_title = st.text_input("Target Role / Job Title:")
+            submitted = st.form_submit_button("Start Sequence")
+
+        if submitted:
+            if not contact_email:
+                st.error("Contact email is required.")
+            else:
+                if not contact_id:
+                    contact_id = contact_email
+                try:
+                    r = requests.post(
+                        f"{backend_url}/outreach/sequences",
+                        json={
+                            "contact_id": contact_id,
+                            "contact_email": contact_email,
+                            "contact_name": contact_name,
+                            "company": company,
+                            "job_title": job_title,
+                        },
+                        timeout=10,
+                    )
+                    if r.ok:
+                        st.success(f"Sequence started for {contact_email}!")
+                        st.json(r.json())
+                    else:
+                        st.error(f"Error: {r.text}")
+                except Exception as e:
+                    st.error(f"Request failed: {e}")
+
+        st.markdown("---")
+        st.markdown("#### Generate Drafts Now")
+        st.caption("Run the drafting cycle manually (normally runs daily via bot).")
+        col1, col2 = st.columns(2)
+        with col1:
+            use_llm = st.checkbox("Use LLM for drafting", value=False, key="run_use_llm")
+        with col2:
+            dry_run = st.checkbox("Dry run (no saves)", value=True, key="run_dry_run")
+        if st.button("Run Cycle", key="run_cycle_btn"):
+            try:
+                r = requests.post(
+                    f"{backend_url}/outreach/run",
+                    json={"dry_run": dry_run, "use_llm": use_llm},
+                    timeout=30,
+                )
+                if r.ok:
+                    result = r.json()
+                    st.success(f"Cycle complete! Drafts generated: {result['stats']['drafts_generated']}")
+                    st.json(result["stats"])
+                else:
+                    st.error(f"Error: {r.text}")
+            except Exception as e:
+                st.error(f"Request failed: {e}")
+
+
 # --- CRM ---
 def render_crm(backend_url: str):
     """CRM tab — contacts table, Today's Actions, thread history."""
@@ -2261,11 +2483,11 @@ def main():
 
     st.title("JobPilot Dashboard")
 
-    # Main tabs — 11 tabs
+    # Main tabs — 12 tabs
     (tab_overview, tab_disc, tab_table, tab_my_resumes,
-     tab_cover, tab_resume, tab_crm, tab_signals, tab_bots, tab_rules, tab_sites) = st.tabs(
+     tab_cover, tab_resume, tab_crm, tab_signals, tab_outreach, tab_bots, tab_rules, tab_sites) = st.tabs(
         ["Overview", "Job Discovery", "Applications", "My Resumes",
-         "Cover Letter", "Resume Studio", "CRM", "Signals", "Bot Controls", "Email Rules", "Sites & Sources"]
+         "Cover Letter", "Resume Studio", "CRM", "Signals", "Outreach", "Bot Controls", "Email Rules", "Sites & Sources"]
     )
 
     with tab_overview:
@@ -2293,6 +2515,9 @@ def main():
 
     with tab_signals:
         render_signals(backend_url)
+
+    with tab_outreach:
+        render_outreach(backend_url)
 
     with tab_bots:
         render_bot_controls()
