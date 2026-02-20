@@ -738,93 +738,529 @@ def render_cover_letter(df: pd.DataFrame, backend_url: str):
             st.info("Fill in the details and click 'Generate Cover Letter' to get started.")
 
 
-# --- Resume Tailor ---
+# --- Resume Studio ---
 def render_resume_tailor(df: pd.DataFrame, backend_url: str):
-    """Render resume tailor UI."""
-    st.subheader("Resume Tailor")
-    st.caption("Paste your resume + a job description. AI will restructure your resume to maximize relevance and ATS score.")
+    """Resume Studio — constrained bullet optimization with human-in-the-loop control.
 
-    col1, col2 = st.columns([1, 1])
+    Features:
+    - Select stored resume + JD
+    - Deterministic or LLM-assisted rewrite
+    - Side-by-side diff with word-level highlights
+    - Per-bullet approve/reject/edit
+    - Skill gap analysis with computed transfer scores
+    - Variant management (draft → finalized → exported → applied)
+    - Performance tracking (interview callbacks)
+    """
+    st.subheader("Resume Studio")
+    st.caption(
+        "Optimize resume bullets for a specific JD. "
+        "Constrained rewrites — your skills, your metrics, your words. "
+        "Review every change before it's applied."
+    )
 
-    with col1:
-        # Select from tracked jobs or enter manually
-        job_options = ["-- Enter manually --"] + [
-            f"{row['company']} — {row['role']}" for _, row in df.iterrows()
-            if row.get("company")
-        ]
-        selected_job = st.selectbox("Select a tracked job", options=job_options, key="rt_job")
+    # --- Studio sub-tabs ---
+    studio_tab1, studio_tab2, studio_tab3 = st.tabs(
+        ["Optimize Bullets", "My Variants", "Skill Transfer"]
+    )
 
-        if selected_job != "-- Enter manually --":
-            parts = selected_job.split(" — ", 1)
-            company = parts[0] if len(parts) > 0 else ""
-            role = parts[1] if len(parts) > 1 else ""
+    with studio_tab1:
+        _render_studio_optimize(df, backend_url)
+    with studio_tab2:
+        _render_studio_variants(backend_url)
+    with studio_tab3:
+        _render_studio_skill_transfer(backend_url)
+
+
+def _render_studio_optimize(df: pd.DataFrame, backend_url: str):
+    """Optimize bullets tab — select resume, enter JD, rewrite, review."""
+    col_left, col_right = st.columns([1, 1])
+
+    with col_left:
+        st.markdown("**1. Select Resume**")
+        # Fetch stored resumes
+        try:
+            resp = httpx.get(f"{backend_url}/analysis/resumes", timeout=5.0)
+            resumes = resp.json().get("resumes", []) if resp.status_code == 200 else []
+        except Exception:
+            resumes = []
+
+        if resumes:
+            resume_options = {r["id"]: f"{r['name']} ({'default' if r.get('is_default') else r['id'][:6]})" for r in resumes}
+            selected_resume_id = st.selectbox(
+                "Choose a stored resume",
+                options=list(resume_options.keys()),
+                format_func=lambda x: resume_options.get(x, x),
+                key="studio_resume",
+            )
         else:
-            company = ""
-            role = ""
+            st.info("No resumes stored yet. Upload one in the 'My Resumes' tab.")
+            selected_resume_id = None
 
-        company = st.text_input("Company", value=company, key="rt_company")
-        role = st.text_input("Role", value=role, key="rt_role")
-        job_description = st.text_area(
-            "Job Description",
+        st.markdown("**2. Job Description**")
+        # Select from tracked jobs or enter manually
+        job_options = ["-- Paste manually --"]
+        if not df.empty:
+            job_options += [
+                f"{row['company']} — {row['role']}"
+                for _, row in df.iterrows()
+                if row.get("company")
+            ]
+        selected_job = st.selectbox("Select a tracked job", options=job_options, key="studio_job")
+
+        if selected_job != "-- Paste manually --":
+            parts = selected_job.split(" — ", 1)
+            jd_company = parts[0] if parts else ""
+            jd_title = parts[1] if len(parts) > 1 else ""
+        else:
+            jd_company = st.text_input("Company", key="studio_company")
+            jd_title = st.text_input("Job Title", key="studio_title")
+
+        jd_text = st.text_area(
+            "Paste Full Job Description",
             height=200,
-            placeholder="Paste the full job description...",
-            key="rt_jd",
+            placeholder="Paste the complete JD here...",
+            key="studio_jd",
         )
-        resume_text = st.text_area(
-            "Your Current Resume (paste full text)",
-            height=250,
-            placeholder="Paste your entire resume here...",
-            key="rt_resume",
-        )
-        focus_skills = st.text_input(
-            "Priority skills to emphasize (comma-separated, optional)",
-            placeholder="e.g., Python, AWS, machine learning, system design",
-        )
-        tailor_btn = st.button("Tailor Resume", type="primary")
 
-    with col2:
-        st.markdown("**Tailored Resume:**")
-        if tailor_btn:
-            if not company or not role:
-                st.error("Company and Role are required.")
-            elif not job_description:
+        st.markdown("**3. Rewrite Method**")
+        method = st.radio(
+            "Method",
+            ["Deterministic (keyword swaps only)", "LLM-Assisted (with strict guardrails)"],
+            key="studio_method",
+            horizontal=True,
+        )
+
+        optimize_btn = st.button("Optimize Bullets", type="primary", key="studio_optimize")
+
+    with col_right:
+        if optimize_btn:
+            if not selected_resume_id:
+                st.error("Please select a resume first.")
+            elif not jd_text.strip():
                 st.error("Job description is required.")
-            elif not resume_text:
-                st.error("Resume text is required.")
             else:
-                with st.spinner("Tailoring your resume (this may take 15-30 seconds)..."):
+                endpoint = "/studio/rewrite" if "Deterministic" in method else "/studio/rewrite-llm"
+                with st.spinner("Optimizing bullets..."):
                     try:
-                        skills_list = [s.strip() for s in focus_skills.split(",") if s.strip()] if focus_skills else []
                         resp = httpx.post(
-                            f"{backend_url}/tailor-resume",
+                            f"{backend_url}{endpoint}",
                             json={
-                                "company": company,
-                                "role": role,
-                                "job_description": job_description,
-                                "resume_text": resume_text,
-                                "focus_skills": skills_list,
+                                "resume_id": selected_resume_id,
+                                "jd_title": jd_title,
+                                "jd_company": jd_company,
+                                "jd_text": jd_text,
                             },
                             timeout=120.0,
                         )
                         if resp.status_code == 200:
                             data = resp.json()
-                            st.text_area(
-                                "Tailored Resume",
-                                value=data["tailored_resume"],
-                                height=400,
-                                label_visibility="collapsed",
+                            st.session_state["studio_result"] = data
+                            st.success(
+                                f"Optimized {data['rewrite_count']}/{data['total_bullets']} bullets. "
+                                f"Variant saved: {data['variant']['id']}"
                             )
-                            st.caption(f"Tokens used: {data.get('tokens_used', 0)}")
-                            if data.get("changes_summary"):
-                                st.markdown("**Changes made:**")
-                                st.markdown(data["changes_summary"])
-                            st.code(data["tailored_resume"], language=None)
                         else:
                             st.error(f"Error: {resp.status_code} — {resp.text}")
                     except httpx.ConnectError:
-                        st.error("Backend not reachable. Start it: `uvicorn backend.main:app --reload`")
+                        st.error("Backend not reachable.")
                     except Exception as e:
                         st.error(f"Error: {e}")
+
+        # Display results if available
+        result = st.session_state.get("studio_result")
+        if result:
+            _render_studio_result(result, backend_url)
+        else:
+            st.markdown("**Optimized Results:**")
+            st.info("Select a resume, paste a JD, and click 'Optimize Bullets' to get started.")
+
+
+def _render_studio_result(data: dict, backend_url: str):
+    """Render the optimization result — diff report + gap analysis."""
+    variant = data.get("variant", {})
+    diff_report = data.get("diff_report", {})
+    gap_analysis = data.get("gap_analysis", {})
+
+    # --- Score summary ---
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Weighted Score", f"{gap_analysis.get('weighted_score', 0):.0%}")
+    m2.metric("Coverage", f"{gap_analysis.get('coverage_rate', 0):.0%}")
+    m3.metric("Exact Matches", len(gap_analysis.get("exact_matches", [])))
+    m4.metric("Skill Gaps", len(gap_analysis.get("gaps", [])))
+
+    # --- Gap analysis detail ---
+    with st.expander("Skill Gap Analysis", expanded=False):
+        if gap_analysis.get("exact_matches"):
+            st.markdown("**Exact Matches:** " + skill_tags_html(
+                gap_analysis["exact_matches"], "#22c55e"
+            ), unsafe_allow_html=True)
+        if gap_analysis.get("transferable"):
+            st.markdown("**Transferable Skills:**")
+            for t in gap_analysis["transferable"]:
+                score = t.get("score", 0)
+                color = score_color(score)
+                st.markdown(
+                    f'<span style="color:{color}; font-weight:bold;">'
+                    f'{t["best_resume_skill"]} &rarr; {t["jd_skill"]} ({score:.0%})</span>'
+                    f' — {t.get("explanation", "")}',
+                    unsafe_allow_html=True,
+                )
+        if gap_analysis.get("gaps"):
+            st.markdown("**Gaps (no match):** " + skill_tags_html(
+                gap_analysis["gaps"], "#ef4444"
+            ), unsafe_allow_html=True)
+
+    # --- Bullet-by-bullet diff ---
+    st.markdown(f"**Bullet Review** — Variant `{variant.get('id', '?')}`")
+    summary = diff_report.get("summary", {})
+    st.caption(
+        f"Total: {summary.get('total_bullets', 0)} | "
+        f"Changed: {summary.get('changed_bullets', 0)} | "
+        f"Validation: {summary.get('validation_pass_rate', 0):.0%}"
+    )
+
+    for bd in diff_report.get("bullet_diffs", []):
+        idx = bd.get("index", 0)
+        changed = bd.get("changed", False)
+
+        if not changed:
+            st.markdown(
+                f"**Bullet {idx + 1}** — <span style='color:#94a3b8;'>UNCHANGED</span>",
+                unsafe_allow_html=True,
+            )
+            st.text(bd.get("original_text", ""))
+        else:
+            valid = bd.get("validation", {})
+            passed = valid.get("passed", True) if valid else True
+            color = "#22c55e" if passed else "#ef4444"
+            label = "VALID" if passed else "INVALID"
+
+            st.markdown(
+                f"**Bullet {idx + 1}** — <span style='color:{color};'>{label}</span>",
+                unsafe_allow_html=True,
+            )
+
+            # Side-by-side diff
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                st.markdown("*Original:*")
+                st.text(bd.get("original_text", ""))
+            with dc2:
+                st.markdown("*Rewritten:*")
+                # Render word diffs with highlights
+                diff_html = _render_word_diff_html(bd.get("word_diffs", []))
+                if diff_html:
+                    st.markdown(diff_html, unsafe_allow_html=True)
+                else:
+                    st.text(bd.get("rewritten_text", ""))
+
+            # Changes list
+            for c in bd.get("changes", []):
+                st.caption(
+                    f"  {c.get('original', '')} -> {c.get('replacement', '')} "
+                    f"({c.get('reason', '')})"
+                )
+
+            # Approve/reject controls
+            ac1, ac2, ac3 = st.columns([1, 1, 2])
+            with ac1:
+                if st.button("Approve", key=f"approve_{variant.get('id')}_{idx}"):
+                    _approve_bullet(backend_url, variant.get("id"), idx, "approved")
+            with ac2:
+                if st.button("Reject", key=f"reject_{variant.get('id')}_{idx}"):
+                    _approve_bullet(backend_url, variant.get("id"), idx, "rejected")
+            with ac3:
+                edit_text = st.text_input(
+                    "Edit",
+                    value=bd.get("rewritten_text", ""),
+                    key=f"edit_{variant.get('id')}_{idx}",
+                    label_visibility="collapsed",
+                )
+                if st.button("Save Edit", key=f"save_edit_{variant.get('id')}_{idx}"):
+                    _approve_bullet(
+                        backend_url, variant.get("id"), idx,
+                        "approved", edit_text,
+                    )
+
+        st.divider()
+
+    # Finalize button
+    if st.button("Finalize Variant", type="primary", key="studio_finalize"):
+        try:
+            resp = httpx.post(
+                f"{backend_url}/studio/variants/{variant.get('id')}/finalize",
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                final = resp.json()
+                if "error" in final:
+                    st.warning(final["error"])
+                else:
+                    st.success(f"Variant {variant.get('id')} finalized!")
+                    with st.expander("Final Bullets"):
+                        for fb in final.get("final_bullets", []):
+                            source_label = "REWRITTEN" if fb.get("source") == "rewritten" else "ORIGINAL"
+                            st.markdown(f"**[{source_label}]** {fb.get('text', '')}")
+            else:
+                st.error(f"Error: {resp.text}")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+
+def _approve_bullet(backend_url: str, variant_id: str, idx: int, approval: str, edited: str | None = None):
+    """Send bullet approval to backend."""
+    try:
+        payload = {"approval": approval}
+        if edited:
+            payload["user_edited_text"] = edited
+        resp = httpx.patch(
+            f"{backend_url}/studio/variants/{variant_id}/bullet/{idx}",
+            json=payload,
+            timeout=5.0,
+        )
+        if resp.status_code == 200:
+            st.toast(f"Bullet {idx + 1} {approval}")
+        else:
+            st.error(f"Failed: {resp.text}")
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+
+def _render_word_diff_html(word_diffs: list[dict]) -> str:
+    """Render word-level diffs as HTML with color coding."""
+    if not word_diffs:
+        return ""
+    parts = []
+    for wd in word_diffs:
+        t = wd.get("type", "equal")
+        if t == "equal":
+            parts.append(wd.get("value", ""))
+        elif t == "delete":
+            parts.append(
+                f'<span style="background:#fecaca; text-decoration:line-through; padding:1px 3px;">'
+                f'{wd.get("value", "")}</span>'
+            )
+        elif t == "insert":
+            parts.append(
+                f'<span style="background:#bbf7d0; font-weight:bold; padding:1px 3px;">'
+                f'{wd.get("value", "")}</span>'
+            )
+        elif t == "replace":
+            parts.append(
+                f'<span style="background:#fecaca; text-decoration:line-through; padding:1px 3px;">'
+                f'{wd.get("old", "")}</span>'
+                f'<span style="background:#bbf7d0; font-weight:bold; padding:1px 3px;">'
+                f'{wd.get("new", "")}</span>'
+            )
+    return " ".join(parts)
+
+
+def _render_studio_variants(backend_url: str):
+    """My Variants tab — list, view, manage variant lifecycle."""
+    st.markdown("**All Resume Variants**")
+
+    # Stats
+    try:
+        resp = httpx.get(f"{backend_url}/studio/stats", timeout=5.0)
+        if resp.status_code == 200:
+            stats = resp.json()
+            s1, s2, s3, s4, s5 = st.columns(5)
+            s1.metric("Total", stats.get("total_variants", 0))
+            by_status = stats.get("by_status", {})
+            s2.metric("Draft", by_status.get("draft", 0))
+            s3.metric("Finalized", by_status.get("finalized", 0))
+            s4.metric("Applied", by_status.get("applied", 0))
+            s5.metric("Interviews", stats.get("interviews", 0))
+
+            # Bullet analytics
+            ba = stats.get("bullet_analytics", {})
+            if ba.get("total", 0) > 0:
+                with st.expander("Bullet Validation Analytics"):
+                    st.metric("Validation Pass Rate", f"{ba.get('validation_pass_rate', 0):.0%}")
+                    st.metric("Avg Similarity", f"{ba.get('avg_similarity', 0):.2f}")
+                    failures = ba.get("top_failure_reasons", {})
+                    if any(v > 0 for v in failures.values()):
+                        st.markdown("**Top failure reasons:**")
+                        for reason, count in failures.items():
+                            if count > 0:
+                                st.markdown(f"- {reason}: {count}")
+    except Exception:
+        pass
+
+    # List variants
+    try:
+        resp = httpx.get(f"{backend_url}/studio/variants", timeout=5.0)
+        if resp.status_code == 200:
+            variants = resp.json().get("variants", [])
+            if not variants:
+                st.info("No variants yet. Optimize some bullets first!")
+                return
+
+            for v in variants:
+                with st.expander(
+                    f"{v.get('jd_company', '?')} — {v.get('jd_title', '?')} "
+                    f"| {v.get('status', '?')} | Score: {v.get('weighted_score', 0):.0%} "
+                    f"| {v.get('created_at', '')[:10]}"
+                ):
+                    vc1, vc2, vc3 = st.columns(3)
+                    vc1.write(f"**ID:** {v['id']}")
+                    vc2.write(f"**Method:** {v.get('method', '?')}")
+                    vc3.write(f"**Status:** {v.get('status', '?')}")
+
+                    mc1, mc2, mc3, mc4 = st.columns(4)
+                    mc1.metric("Match", f"{v.get('match_score', 0):.0%}")
+                    mc2.metric("Coverage", f"{v.get('coverage_rate', 0):.0%}")
+                    mc3.metric("Exact", v.get("exact_match_count", 0))
+                    mc4.metric("Gaps", v.get("gap_count", 0))
+
+                    # Actions
+                    ac1, ac2, ac3 = st.columns(3)
+                    with ac1:
+                        if v.get("status") == "applied" and not v.get("interview_callback"):
+                            if st.button("Got Interview", key=f"interview_{v['id']}"):
+                                try:
+                                    httpx.post(
+                                        f"{backend_url}/studio/variants/{v['id']}/interview",
+                                        timeout=5.0,
+                                    )
+                                    st.toast("Interview marked!")
+                                    st.rerun()
+                                except Exception:
+                                    pass
+                    with ac2:
+                        if v.get("status") in ("finalized", "exported"):
+                            if st.button("Mark Applied", key=f"apply_{v['id']}"):
+                                try:
+                                    httpx.post(
+                                        f"{backend_url}/studio/variants/{v['id']}/transition",
+                                        json={"new_status": "applied"},
+                                        timeout=5.0,
+                                    )
+                                    st.toast("Marked as applied!")
+                                    st.rerun()
+                                except Exception:
+                                    pass
+                    with ac3:
+                        if st.button("Delete", key=f"del_variant_{v['id']}"):
+                            try:
+                                httpx.delete(
+                                    f"{backend_url}/studio/variants/{v['id']}",
+                                    timeout=5.0,
+                                )
+                                st.toast("Variant deleted")
+                                st.rerun()
+                            except Exception:
+                                pass
+    except Exception:
+        st.warning("Could not load variants. Is the backend running?")
+
+
+def _render_studio_skill_transfer(backend_url: str):
+    """Skill Transfer checker — test any two skills."""
+    st.markdown("**Skill Transferability Checker**")
+    st.caption("Check if two skills are transferable. Computed per-skill, platform-aware, abstraction-aware.")
+
+    tc1, tc2, tc3 = st.columns([2, 2, 1])
+    with tc1:
+        source = st.text_input("Resume Skill", placeholder="e.g., PostgreSQL", key="transfer_src")
+    with tc2:
+        target = st.text_input("JD Skill", placeholder="e.g., MySQL", key="transfer_tgt")
+    with tc3:
+        st.write("")  # spacer
+        st.write("")
+        check_btn = st.button("Check", key="transfer_check")
+
+    if check_btn and source and target:
+        try:
+            resp = httpx.post(
+                f"{backend_url}/studio/skill-transfer",
+                json={"source_skill": source, "target_skill": target},
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                r = resp.json()
+                if r.get("transferable"):
+                    st.success(
+                        f"**Transferable!** Score: {r['score']:.0%}\n\n"
+                        f"{r.get('explanation', '')}"
+                    )
+                else:
+                    st.error(
+                        f"**Not transferable.** Score: {r['score']:.0%}\n\n"
+                        f"{r.get('explanation', '')}"
+                    )
+
+                # Show metadata
+                if r.get("source_meta"):
+                    with st.expander("Skill Metadata"):
+                        sm, tm = st.columns(2)
+                        with sm:
+                            st.json(r.get("source_meta"))
+                        with tm:
+                            st.json(r.get("target_meta"))
+            else:
+                st.error(f"Error: {resp.text}")
+        except httpx.ConnectError:
+            st.error("Backend not reachable.")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    # Gap analysis
+    st.divider()
+    st.markdown("**Full Gap Analysis**")
+    ga1, ga2 = st.columns(2)
+    with ga1:
+        resume_skills_input = st.text_area(
+            "Resume Skills (one per line)",
+            height=150,
+            placeholder="Python\nPostgreSQL\nDocker\nAWS",
+            key="gap_resume",
+        )
+    with ga2:
+        jd_skills_input = st.text_area(
+            "JD Required Skills (one per line)",
+            height=150,
+            placeholder="Java\nMySQL\nKubernetes\nGCP",
+            key="gap_jd",
+        )
+
+    if st.button("Analyze Gaps", key="gap_analyze"):
+        resume_skills = [s.strip() for s in resume_skills_input.strip().split("\n") if s.strip()]
+        jd_skills = [s.strip() for s in jd_skills_input.strip().split("\n") if s.strip()]
+        if resume_skills and jd_skills:
+            try:
+                resp = httpx.post(
+                    f"{backend_url}/studio/gap-analysis",
+                    json={"resume_skills": resume_skills, "jd_skills": jd_skills},
+                    timeout=10.0,
+                )
+                if resp.status_code == 200:
+                    ga = resp.json()
+                    g1, g2, g3 = st.columns(3)
+                    g1.metric("Weighted Score", f"{ga.get('weighted_score', 0):.0%}")
+                    g2.metric("Coverage", f"{ga.get('coverage_rate', 0):.0%}")
+                    g3.metric("Exact Match Rate", f"{ga.get('match_rate', 0):.0%}")
+
+                    if ga.get("exact_matches"):
+                        st.markdown("**Exact:** " + skill_tags_html(ga["exact_matches"], "#22c55e"), unsafe_allow_html=True)
+                    if ga.get("transferable"):
+                        st.markdown("**Transferable:**")
+                        for t in ga["transferable"]:
+                            sc = t.get("score", 0)
+                            st.markdown(
+                                f'<span style="color:{score_color(sc)}; font-weight:bold;">'
+                                f'{t["best_resume_skill"]} &rarr; {t["jd_skill"]} ({sc:.0%})</span>'
+                                f' — {t.get("explanation", "")}',
+                                unsafe_allow_html=True,
+                            )
+                    if ga.get("gaps"):
+                        st.markdown("**Gaps:** " + skill_tags_html(ga["gaps"], "#ef4444"), unsafe_allow_html=True)
+                else:
+                    st.error(f"Error: {resp.text}")
+            except Exception as e:
+                st.error(f"Error: {e}")
+        else:
+            st.warning("Enter skills in both fields.")
 
 
 # --- Job Discovery ---
@@ -1404,7 +1840,7 @@ def main():
     (tab_overview, tab_disc, tab_table, tab_my_resumes,
      tab_cover, tab_resume, tab_bots, tab_rules, tab_sites) = st.tabs(
         ["Overview", "Job Discovery", "Applications", "My Resumes",
-         "Cover Letter", "Resume Tailor", "Bot Controls", "Email Rules", "Sites & Sources"]
+         "Cover Letter", "Resume Studio", "Bot Controls", "Email Rules", "Sites & Sources"]
     )
 
     with tab_overview:
