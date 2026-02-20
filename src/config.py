@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     discovery_bot_interval_minutes: int = 30
     followup_threshold_days: int = 7
 
+    # --- Discovery Bot ---
+    discovery_keywords: str = ""  # comma-separated: "software engineer,backend developer"
+    discovery_locations: str = ""  # comma-separated: "remote,new york"
+    discovery_excluded_keywords: str = ""  # comma-separated: "intern,director"
+
     # --- Logging ---
     log_level: str = "INFO"
     log_dir: str = "logs"

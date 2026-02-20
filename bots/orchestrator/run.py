@@ -38,12 +38,14 @@ class Orchestrator:
         self,
         enable_email: bool = True,
         enable_reminder: bool = True,
+        enable_discovery: bool = True,
         run_immediately: bool = False,
     ) -> None:
         self.settings = get_settings()
         self.scheduler = BotScheduler()
         self.enable_email = enable_email
         self.enable_reminder = enable_reminder
+        self.enable_discovery = enable_discovery
         self.run_immediately = run_immediately
         self._notifier: TelegramNotifier | None = None
         self._stopped = False
@@ -55,6 +57,9 @@ class Orchestrator:
 
         if self.enable_reminder:
             self._setup_reminder_bot()
+
+        if self.enable_discovery:
+            self._setup_discovery_bot()
 
         # Telegram for orchestrator-level alerts
         self._notifier = TelegramNotifier()
@@ -94,6 +99,23 @@ class Orchestrator:
             )
         except Exception as e:
             logger.error(f"Failed to register reminder bot: {e}", exc_info=True)
+
+    def _setup_discovery_bot(self) -> None:
+        """Register the discovery bot for interval scheduling."""
+        try:
+            from bots.discovery_bot.run import DiscoveryBot
+
+            bot = DiscoveryBot()
+            self.scheduler.add_interval_bot(
+                bot,
+                minutes=self.settings.discovery_bot_interval_minutes,
+                run_immediately=self.run_immediately,
+            )
+            logger.info(
+                f"Discovery bot registered: every {self.settings.discovery_bot_interval_minutes} min"
+            )
+        except Exception as e:
+            logger.error(f"Failed to register discovery bot: {e}", exc_info=True)
 
     def start(self) -> None:
         """Start the orchestrator and all scheduled bots."""
@@ -172,6 +194,11 @@ def main() -> None:
         help="Disable the reminder bot",
     )
     parser.add_argument(
+        "--no-discovery",
+        action="store_true",
+        help="Disable the discovery bot",
+    )
+    parser.add_argument(
         "--run-now",
         action="store_true",
         help="Run all bots once immediately at startup",
@@ -192,6 +219,7 @@ def main() -> None:
     orchestrator = Orchestrator(
         enable_email=not args.no_email,
         enable_reminder=not args.no_reminder,
+        enable_discovery=not args.no_discovery,
         run_immediately=args.run_now,
     )
 

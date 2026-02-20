@@ -29,6 +29,10 @@ pandas==2.2.3
 # LLM
 openai==1.59.7
 
+# Discovery Bot
+feedparser==6.0.11
+beautifulsoup4==4.12.3
+
 # Utilities
 python-dotenv==1.0.1
 

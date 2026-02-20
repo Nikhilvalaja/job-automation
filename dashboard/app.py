@@ -421,6 +421,13 @@ def render_bot_controls():
             "dry_run": "python -m bots.reminder_bot.run --dry-run",
         },
         {
+            "name": "Discovery Bot",
+            "desc": f"Scans {30}+ job sources (RSS feeds, APIs, career pages) every {settings.discovery_bot_interval_minutes} min",
+            "schedule": f"Every {settings.discovery_bot_interval_minutes} minutes",
+            "command": "python -m bots.discovery_bot.run",
+            "dry_run": "python -m bots.discovery_bot.run --dry-run",
+        },
+        {
             "name": "Tracker Bot",
             "desc": "CLI tool for manually adding/managing job applications",
             "schedule": "Manual (CLI only)",
