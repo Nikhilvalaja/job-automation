@@ -18,12 +18,15 @@ from pydantic import BaseModel
 from src.discovery.database import (
     get_companies,
     get_job_by_id,
+    get_new_jobs_since,
     get_source_stats,
+    get_stale_jobs,
     get_stats,
     get_unparsed_jobs,
     init_db,
     mark_applied,
     mark_tracked,
+    search_fts,
     search_jobs,
     update_parsed_fields,
     update_status,
@@ -176,6 +179,30 @@ async def apply_to_job(job_id: str):
         "title": job["title"],
         "company": job.get("company", ""),
     }
+
+
+@router.get("/search")
+async def fts_search(
+    q: str = Query(..., description="Full-text search query"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """Full-text search using FTS5 (fast keyword search across title, company, description, skills)."""
+    jobs = search_fts(q, limit=limit)
+    return {"jobs": jobs, "total": len(jobs), "query": q}
+
+
+@router.get("/new")
+async def new_jobs(hours: int = Query(2, ge=1, le=168)):
+    """Get jobs first seen within the last N hours (truly new discoveries)."""
+    jobs = get_new_jobs_since(hours=hours)
+    return {"jobs": jobs, "total": len(jobs), "hours": hours}
+
+
+@router.get("/stale")
+async def stale_jobs(days: int = Query(30, ge=1, le=365)):
+    """Get jobs not seen in any feed for N days (likely closed/filled)."""
+    jobs = get_stale_jobs(days=days)
+    return {"jobs": jobs, "total": len(jobs), "days": days}
 
 
 @router.post("/parse")

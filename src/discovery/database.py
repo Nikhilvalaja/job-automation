@@ -1,12 +1,16 @@
 """SQLite database for discovered jobs.
 
 Robust database with:
-- discovered_jobs: main table with 25+ structured fields
+- discovered_jobs: main table with 30+ structured fields
 - discovery_sources: per-source tracking (last fetch, error count, ETag cache)
 - companies: normalized company registry for canonical dedup
+- jobs_fts: FTS5 full-text search for blazing fast keyword queries
 - Indexes on all filter columns for fast queries
 - Fingerprint-based dedup (hash of normalized title+company+location)
+- ATS job_id extraction from URLs for cross-source matching
 - Company name normalization for cross-source matching
+- Newness window tracking (first_seen, last_seen, posted_at)
+- Adaptive scheduling (slow down dead sources, speed up productive ones)
 
 Design follows the 3-layer architecture:
 - Layer A: Aggregator feeds (Indeed, RemoteOK, We Work Remotely, etc.)
@@ -20,9 +24,10 @@ import hashlib
 import re
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from src.config import PROJECT_ROOT
 from src.utils.logging import get_logger
@@ -76,6 +81,34 @@ def normalize_company(name: str) -> str:
     return cleaned or name.lower().strip()
 
 
+# ---------------------------------------------------------------------------
+# ATS job_id extraction from URLs
+# ---------------------------------------------------------------------------
+
+_ATS_PATTERNS = [
+    # Greenhouse: https://boards.greenhouse.io/company/jobs/12345
+    re.compile(r"boards\.greenhouse\.io/\w+/jobs/(\d+)"),
+    # Lever: https://jobs.lever.co/company/uuid
+    re.compile(r"jobs\.lever\.co/\w+/([a-f0-9-]{36})"),
+    # Ashby: https://jobs.ashbyhq.com/company/uuid
+    re.compile(r"jobs\.ashbyhq\.com/[\w-]+/([a-f0-9-]{36})"),
+]
+
+
+def extract_ats_job_id(url: str) -> str:
+    """Extract a unique ATS job ID from known URL patterns.
+
+    Returns the ID if found, empty string otherwise.
+    """
+    if not url:
+        return ""
+    for pattern in _ATS_PATTERNS:
+        match = pattern.search(url)
+        if match:
+            return match.group(1)
+    return ""
+
+
 def get_db() -> sqlite3.Connection:
     """Get a SQLite connection with row factory."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -114,8 +147,9 @@ def init_db() -> None:
                 skills TEXT DEFAULT '',
                 education TEXT DEFAULT '',
 
-                -- Dedup fingerprint (hash of normalized title+company+location)
-                fingerprint TEXT DEFAULT '',
+                -- Dedup fields
+                fingerprint TEXT DEFAULT '',         -- md5(normalized title+company+location)
+                ats_job_id TEXT DEFAULT '',           -- extracted from ATS URL (Greenhouse/Lever/Ashby)
 
                 -- Scoring and status
                 match_score REAL DEFAULT 0.0,
@@ -123,6 +157,11 @@ def init_db() -> None:
                 parsed INTEGER DEFAULT 0,
                 tracked INTEGER DEFAULT 0,
                 applied_at TEXT DEFAULT '',
+
+                -- Newness tracking
+                first_seen_at TEXT NOT NULL,          -- when we first discovered this job
+                last_seen_at TEXT DEFAULT '',          -- last time this URL appeared in a fetch
+                posted_at TEXT DEFAULT '',             -- original posting date (from feed if available)
 
                 -- Timestamps
                 discovered_at TEXT NOT NULL,
@@ -178,7 +217,21 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_discovered_at ON discovered_jobs(discovered_at);
             CREATE INDEX IF NOT EXISTS idx_remote_type ON discovered_jobs(remote_type);
             CREATE INDEX IF NOT EXISTS idx_fingerprint ON discovered_jobs(fingerprint);
+            CREATE INDEX IF NOT EXISTS idx_ats_job_id ON discovered_jobs(ats_job_id);
+            CREATE INDEX IF NOT EXISTS idx_first_seen ON discovered_jobs(first_seen_at);
         """)
+
+        # Step 4: Create FTS5 full-text search index (if not exists)
+        try:
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(
+                    title, company, description, skills, location,
+                    content='discovered_jobs',
+                    content_rowid='rowid'
+                )
+            """)
+        except Exception:
+            pass  # FTS5 may not be available in all SQLite builds
 
         conn.commit()
         logger.info("Discovery database initialized")
@@ -193,6 +246,10 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
     job_migrations = [
         ("fingerprint", "TEXT DEFAULT ''"),
         ("applied_at", "TEXT DEFAULT ''"),
+        ("ats_job_id", "TEXT DEFAULT ''"),
+        ("first_seen_at", "TEXT DEFAULT ''"),
+        ("last_seen_at", "TEXT DEFAULT ''"),
+        ("posted_at", "TEXT DEFAULT ''"),
     ]
     for col_name, col_type in job_migrations:
         if col_name not in existing:
@@ -256,18 +313,26 @@ def _register_company(conn: sqlite3.Connection, company: str, source_name: str) 
 
 
 def insert_job(job: dict) -> str | None:
-    """Insert a discovered job. Returns ID or None if duplicate URL."""
+    """Insert a discovered job. Returns ID or None if duplicate URL.
+
+    Extracts ATS job_id from URL, computes fingerprint, tracks newness.
+    """
     conn = get_db()
     try:
         job_id = str(uuid.uuid4())[:8]
         fp = _compute_fingerprint(
             job.get("title", ""), job.get("company", ""), job.get("location", ""),
         )
+        ats_id = extract_ats_job_id(job.get("url", ""))
+        now = datetime.now().isoformat()
+        posted = job.get("posted_at", "") or ""
+
         conn.execute(
             """INSERT INTO discovered_jobs
                (id, title, company, url, description, location, source_name,
-                match_score, fingerprint, discovered_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                match_score, fingerprint, ats_job_id, first_seen_at, last_seen_at,
+                posted_at, discovered_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 job_id,
                 job.get("title", ""),
@@ -277,8 +342,9 @@ def insert_job(job: dict) -> str | None:
                 job.get("location", ""),
                 job.get("source_name", ""),
                 job.get("score", 0.0),
-                fp,
-                datetime.now().isoformat(),
+                fp, ats_id,
+                now, now,  # first_seen = last_seen = now
+                posted, now,
             ),
         )
         # Register company in the registry
@@ -286,7 +352,15 @@ def insert_job(job: dict) -> str | None:
         conn.commit()
         return job_id
     except sqlite3.IntegrityError:
-        # Duplicate URL
+        # Duplicate URL — update last_seen_at instead
+        try:
+            conn.execute(
+                "UPDATE discovered_jobs SET last_seen_at=? WHERE url=?",
+                (datetime.now().isoformat(), job.get("url", "")),
+            )
+            conn.commit()
+        except Exception:
+            pass
         return None
     finally:
         conn.close()
@@ -621,5 +695,177 @@ def get_all_urls() -> set[str]:
     try:
         rows = conn.execute("SELECT url FROM discovered_jobs").fetchall()
         return {r["url"] for r in rows}
+    finally:
+        conn.close()
+
+
+def get_all_ats_ids() -> set[str]:
+    """Get all ATS job IDs for cross-source dedup."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT ats_job_id FROM discovered_jobs WHERE ats_job_id != ''"
+        ).fetchall()
+        return {r["ats_job_id"] for r in rows}
+    except Exception:
+        return set()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Newness Window — only notify for truly new jobs
+# ---------------------------------------------------------------------------
+
+def get_new_jobs_since(hours: int = 2) -> list[dict]:
+    """Get jobs first seen within the last N hours.
+
+    Use this to notify only about genuinely new discoveries,
+    filtering out re-fetched old postings.
+    """
+    conn = get_db()
+    try:
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+        rows = conn.execute(
+            """SELECT * FROM discovered_jobs
+               WHERE first_seen_at >= ?
+               ORDER BY match_score DESC, first_seen_at DESC""",
+            (cutoff,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_stale_jobs(days: int = 30) -> list[dict]:
+    """Get jobs not seen in any feed for N days (likely closed/filled)."""
+    conn = get_db()
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        rows = conn.execute(
+            """SELECT * FROM discovered_jobs
+               WHERE last_seen_at != '' AND last_seen_at < ?
+               AND status = 'new'
+               ORDER BY last_seen_at ASC LIMIT 100""",
+            (cutoff,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Scheduling
+# ---------------------------------------------------------------------------
+
+def get_adaptive_interval(source_name: str) -> int:
+    """Get the recommended fetch interval for a source based on its history.
+
+    Rules:
+    - 3+ consecutive errors → back off to 360 min
+    - Last 3 fetches yielded 0 jobs → slow to 240 min
+    - Productive source (10+ jobs last fetch) → speed up to 60 min
+    - Default: 120 min
+    """
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT consecutive_errors, last_job_count, total_jobs_found FROM discovery_sources WHERE source_name=?",
+            (source_name,),
+        ).fetchone()
+        if not row:
+            return 120  # Default
+
+        if row["consecutive_errors"] >= 3:
+            return 360  # Back off on repeated errors
+        if row["last_job_count"] == 0 and row["total_jobs_found"] == 0:
+            return 360  # Never produced anything
+        if row["last_job_count"] == 0:
+            return 240  # Recently dry
+        if row["last_job_count"] >= 10:
+            return 60   # Very productive
+        return 120  # Normal
+    except Exception:
+        return 120
+    finally:
+        conn.close()
+
+
+def should_fetch_source(source_name: str) -> bool:
+    """Check if enough time has passed since last fetch for this source.
+
+    Uses adaptive intervals based on source history.
+    """
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT last_fetched_at, consecutive_errors, last_job_count, total_jobs_found FROM discovery_sources WHERE source_name=?",
+            (source_name,),
+        ).fetchone()
+        if not row or not row["last_fetched_at"]:
+            return True  # Never fetched
+
+        interval = get_adaptive_interval(source_name)
+        last_fetch = datetime.fromisoformat(row["last_fetched_at"])
+        return datetime.now() - last_fetch >= timedelta(minutes=interval)
+    except Exception:
+        return True  # Fetch on error
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Full-Text Search (FTS5)
+# ---------------------------------------------------------------------------
+
+def search_fts(query: str, limit: int = 50) -> list[dict]:
+    """Full-text search using SQLite FTS5.
+
+    Much faster than LIKE %keyword% for large databases.
+    Falls back to LIKE if FTS5 is not available.
+    """
+    conn = get_db()
+    try:
+        # Try FTS5 first
+        try:
+            rows = conn.execute(
+                """SELECT d.* FROM jobs_fts f
+                   JOIN discovered_jobs d ON d.rowid = f.rowid
+                   WHERE jobs_fts MATCH ?
+                   ORDER BY rank
+                   LIMIT ?""",
+                (query, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            # FTS5 not available or not populated — fall back to LIKE
+            kw = f"%{query}%"
+            rows = conn.execute(
+                """SELECT * FROM discovered_jobs
+                   WHERE title LIKE ? OR description LIKE ? OR skills LIKE ?
+                   ORDER BY match_score DESC LIMIT ?""",
+                (kw, kw, kw, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def rebuild_fts_index() -> int:
+    """Rebuild the FTS5 index from the discovered_jobs table.
+
+    Call this periodically or after bulk inserts.
+    Uses the FTS5 'rebuild' command for content-external tables.
+    """
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO jobs_fts(jobs_fts) VALUES('rebuild')")
+        conn.commit()
+        count = conn.execute("SELECT COUNT(*) as cnt FROM jobs_fts").fetchone()["cnt"]
+        logger.info(f"FTS index rebuilt with {count} jobs")
+        return count
+    except Exception as e:
+        logger.debug(f"FTS rebuild failed (may not be available): {e}")
+        return 0
     finally:
         conn.close()

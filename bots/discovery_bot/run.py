@@ -25,6 +25,7 @@ import sys
 from bots.base import BaseBot
 from src.config import get_settings
 from src.discovery.database import (
+    get_all_ats_ids,
     get_all_fingerprints,
     get_all_urls,
     get_source_cache,
@@ -32,6 +33,9 @@ from src.discovery.database import (
     get_unparsed_jobs,
     init_db,
     insert_job,
+    extract_ats_job_id,
+    rebuild_fts_index,
+    should_fetch_source,
     update_parsed_fields,
     update_source_stats,
     _compute_fingerprint,
@@ -86,8 +90,9 @@ class DiscoveryBot(BaseBot):
         """Full discovery: fetch → score → store → parse.
 
         Uses 3-layer architecture:
+        - Adaptive scheduling (skip sources not yet due)
         - ETag/If-Modified-Since caching for efficient re-fetching
-        - URL + fingerprint dedup (cross-source matching)
+        - URL + fingerprint + ATS job_id dedup (cross-source matching)
         - Per-source stats tracking
         """
         prefs = self._preferences or JobPreferences.from_config()
@@ -95,19 +100,36 @@ class DiscoveryBot(BaseBot):
         query = prefs.keywords[0] if prefs.keywords else "software engineer"
         location = prefs.locations[0] if prefs.locations else ""
 
-        # Load existing URLs and fingerprints from DB for dedup
+        # Load existing URLs, fingerprints, and ATS IDs from DB for dedup
         existing_urls = get_all_urls()
         existing_fps = get_all_fingerprints()
-        logger.info(f"Loaded {len(existing_urls)} URLs + {len(existing_fps)} fingerprints for dedup")
+        existing_ats_ids = get_all_ats_ids()
+        logger.info(
+            f"Loaded {len(existing_urls)} URLs + {len(existing_fps)} fingerprints "
+            f"+ {len(existing_ats_ids)} ATS IDs for dedup"
+        )
 
         sources = get_enabled_sources(self.source_filter)
-        logger.info(f"Scanning {len(sources)} sources...")
 
-        # Fetch from all sources with ETag caching
+        # Adaptive scheduling: skip sources that aren't due yet
+        skipped_sources = 0
+        due_sources = []
+        for source in sources:
+            if should_fetch_source(source.name):
+                due_sources.append(source)
+            else:
+                skipped_sources += 1
+
+        logger.info(
+            f"Scanning {len(due_sources)} sources "
+            f"(skipped {skipped_sources} not yet due)..."
+        )
+
+        # Fetch from due sources with ETag caching
         all_jobs: list[dict] = []
         source_errors = 0
 
-        for source in sources:
+        for source in due_sources:
             try:
                 # Get cached ETag/Last-Modified for conditional requests
                 cache = get_source_cache(source.name)
@@ -137,7 +159,7 @@ class DiscoveryBot(BaseBot):
 
         logger.info(f"Found {len(all_jobs)} total jobs across all sources")
 
-        # Score, filter, dedup (URL + fingerprint), store
+        # Score, filter, dedup (URL + fingerprint + ATS ID), store
         matched = []
         rejected = 0
         duplicates = 0
@@ -149,7 +171,13 @@ class DiscoveryBot(BaseBot):
                 duplicates += 1
                 continue
 
-            # Dedup pass 2: fingerprint match (catches same job from different sources)
+            # Dedup pass 2: ATS job_id match (same job posted across aggregators)
+            ats_id = extract_ats_job_id(job.get("url", ""))
+            if ats_id and ats_id in existing_ats_ids:
+                duplicates += 1
+                continue
+
+            # Dedup pass 3: fingerprint match (catches same job from different sources)
             fp = _compute_fingerprint(
                 job.get("title", ""), job.get("company", ""), job.get("location", ""),
             )
@@ -174,6 +202,8 @@ class DiscoveryBot(BaseBot):
                 matched.append(job)
                 existing_urls.add(job["url"])
                 existing_fps.add(fp)
+                if ats_id:
+                    existing_ats_ids.add(ats_id)
 
         matched.sort(key=lambda j: j["score"], reverse=True)
 
@@ -234,8 +264,13 @@ class DiscoveryBot(BaseBot):
                 f"*Discovery Bot: {stored} New Jobs Found*\n\n{job_list}{more}"
             )
 
+        # Rebuild FTS index after batch insert
+        if stored > 0 and not self.dry_run:
+            rebuild_fts_index()
+
         stats = {
-            "sources_scanned": len(sources),
+            "sources_scanned": len(due_sources),
+            "sources_skipped": skipped_sources,
             "total_found": len(all_jobs),
             "matched": len(matched),
             "stored": stored,

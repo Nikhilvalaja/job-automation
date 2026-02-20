@@ -26,7 +26,11 @@ from src.discovery.sources import (
 )
 from src.discovery.fetcher import _clean_html
 from src.discovery.parser import JobParser, _detect_category, _detect_level, _detect_years_min
-from src.discovery.database import _compute_fingerprint, normalize_company
+from src.discovery.database import (
+    _compute_fingerprint,
+    extract_ats_job_id,
+    normalize_company,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -397,16 +401,19 @@ class TestDiscoveryDatabase:
 class TestDiscoveryBot:
     """Test the Discovery Bot with mocked sources and DB."""
 
+    @patch("bots.discovery_bot.run.rebuild_fts_index")
     @patch("bots.discovery_bot.run.insert_job", return_value="abc123")
     @patch("bots.discovery_bot.run.update_parsed_fields")
+    @patch("bots.discovery_bot.run.get_all_ats_ids", return_value=set())
     @patch("bots.discovery_bot.run.get_all_fingerprints", return_value=set())
     @patch("bots.discovery_bot.run.get_all_urls", return_value=set())
     @patch("bots.discovery_bot.run.update_source_stats")
     @patch("bots.discovery_bot.run.get_source_cache", return_value={"etag": "", "last_modified": ""})
     @patch("bots.discovery_bot.run.get_last_fetch_meta", return_value={"etag": "", "modified": "", "content_hash": ""})
+    @patch("bots.discovery_bot.run.should_fetch_source", return_value=True)
     @patch("bots.discovery_bot.run.fetch_source")
     @patch("bots.discovery_bot.run.get_enabled_sources")
-    def test_discovery_stores_to_db(self, mock_sources, mock_fetch, mock_meta, mock_cache, mock_src_stats, mock_urls, mock_fps, mock_update, mock_insert):
+    def test_discovery_stores_to_db(self, mock_sources, mock_fetch, mock_should, mock_meta, mock_cache, mock_src_stats, mock_urls, mock_fps, mock_ats, mock_update, mock_insert, mock_fts):
         """Discovery should store matched jobs in SQLite."""
         from bots.discovery_bot.run import DiscoveryBot
         from src.discovery.sources import JobSource, SourceType
@@ -428,14 +435,16 @@ class TestDiscoveryBot:
         assert stats["stored"] >= 1
         mock_insert.assert_called()
 
+    @patch("bots.discovery_bot.run.get_all_ats_ids", return_value=set())
     @patch("bots.discovery_bot.run.get_all_fingerprints", return_value=set())
     @patch("bots.discovery_bot.run.get_all_urls", return_value={"http://existing.com/job1"})
     @patch("bots.discovery_bot.run.update_source_stats")
     @patch("bots.discovery_bot.run.get_source_cache", return_value={"etag": "", "last_modified": ""})
     @patch("bots.discovery_bot.run.get_last_fetch_meta", return_value={"etag": "", "modified": "", "content_hash": ""})
+    @patch("bots.discovery_bot.run.should_fetch_source", return_value=True)
     @patch("bots.discovery_bot.run.fetch_source")
     @patch("bots.discovery_bot.run.get_enabled_sources")
-    def test_deduplication_via_db(self, mock_sources, mock_fetch, mock_meta, mock_cache, mock_src_stats, mock_urls, mock_fps):
+    def test_deduplication_via_db(self, mock_sources, mock_fetch, mock_should, mock_meta, mock_cache, mock_src_stats, mock_urls, mock_fps, mock_ats):
         """Jobs with URLs already in DB should be skipped."""
         from bots.discovery_bot.run import DiscoveryBot
         from src.discovery.sources import JobSource, SourceType
@@ -458,14 +467,16 @@ class TestDiscoveryBot:
         assert stats["duplicates"] == 1
         assert stats["matched"] == 1
 
+    @patch("bots.discovery_bot.run.get_all_ats_ids", return_value=set())
     @patch("bots.discovery_bot.run.get_all_fingerprints", return_value=set())
     @patch("bots.discovery_bot.run.get_all_urls", return_value=set())
     @patch("bots.discovery_bot.run.update_source_stats")
     @patch("bots.discovery_bot.run.get_source_cache", return_value={"etag": "", "last_modified": ""})
     @patch("bots.discovery_bot.run.get_last_fetch_meta", return_value={"etag": "", "modified": "", "content_hash": ""})
+    @patch("bots.discovery_bot.run.should_fetch_source", return_value=True)
     @patch("bots.discovery_bot.run.fetch_source")
     @patch("bots.discovery_bot.run.get_enabled_sources")
-    def test_rejected_jobs_counted(self, mock_sources, mock_fetch, mock_meta, mock_cache, mock_src_stats, mock_urls, mock_fps):
+    def test_rejected_jobs_counted(self, mock_sources, mock_fetch, mock_should, mock_meta, mock_cache, mock_src_stats, mock_urls, mock_fps, mock_ats):
         """Jobs with excluded keywords should be rejected."""
         from bots.discovery_bot.run import DiscoveryBot
         from src.discovery.sources import JobSource, SourceType
@@ -488,3 +499,217 @@ class TestDiscoveryBot:
         stats = bot.run_once()
         assert stats["rejected"] == 1
         assert stats["matched"] == 0
+
+
+# ---------------------------------------------------------------------------
+# ATS Job ID Extraction Tests
+# ---------------------------------------------------------------------------
+
+class TestATSJobIdExtraction:
+    """Test extraction of ATS job IDs from URLs."""
+
+    def test_greenhouse_url(self):
+        url = "https://boards.greenhouse.io/stripe/jobs/12345"
+        assert extract_ats_job_id(url) == "12345"
+
+    def test_greenhouse_url_with_params(self):
+        url = "https://boards.greenhouse.io/openai/jobs/98765?gh_jid=98765"
+        assert extract_ats_job_id(url) == "98765"
+
+    def test_lever_url(self):
+        url = "https://jobs.lever.co/netflix/abcd1234-5678-9abc-def0-123456789abc"
+        assert extract_ats_job_id(url) == "abcd1234-5678-9abc-def0-123456789abc"
+
+    def test_ashby_url(self):
+        url = "https://jobs.ashbyhq.com/linear/abcd1234-5678-9abc-def0-123456789abc"
+        assert extract_ats_job_id(url) == "abcd1234-5678-9abc-def0-123456789abc"
+
+    def test_unknown_url_returns_empty(self):
+        assert extract_ats_job_id("https://example.com/jobs/123") == ""
+
+    def test_empty_url(self):
+        assert extract_ats_job_id("") == ""
+
+    def test_none_url(self):
+        assert extract_ats_job_id(None) == ""
+
+
+# ---------------------------------------------------------------------------
+# Adaptive Scheduling Tests
+# ---------------------------------------------------------------------------
+
+class TestAdaptiveScheduling:
+    """Test adaptive fetch interval logic."""
+
+    def test_new_source_gets_default_interval(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, get_adaptive_interval
+            init_db()
+            assert get_adaptive_interval("never_seen") == 120
+
+    def test_erroring_source_backs_off(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, get_adaptive_interval, update_source_stats
+            init_db()
+            # 3 consecutive errors
+            for _ in range(3):
+                update_source_stats("bad_source", "api", "http://bad.com", 0, error=True)
+            assert get_adaptive_interval("bad_source") == 360
+
+    def test_productive_source_speeds_up(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, get_adaptive_interval, update_source_stats
+            init_db()
+            update_source_stats("good_source", "api", "http://good.com", 15)
+            assert get_adaptive_interval("good_source") == 60
+
+    def test_dry_source_slows_down(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, get_adaptive_interval, update_source_stats
+            init_db()
+            # First fetch has jobs, second has 0
+            update_source_stats("dry_source", "api", "http://dry.com", 5)
+            update_source_stats("dry_source", "api", "http://dry.com", 0)
+            assert get_adaptive_interval("dry_source") == 240
+
+    def test_should_fetch_new_source(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, should_fetch_source
+            init_db()
+            assert should_fetch_source("brand_new") is True
+
+    def test_should_not_fetch_recently_fetched(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, should_fetch_source, update_source_stats
+            init_db()
+            # Just fetched — should not be due yet (default 120 min)
+            update_source_stats("recent", "api", "http://r.com", 5)
+            assert should_fetch_source("recent") is False
+
+
+# ---------------------------------------------------------------------------
+# Newness Window Tests
+# ---------------------------------------------------------------------------
+
+class TestNewnessWindow:
+    """Test first_seen/last_seen tracking and newness queries."""
+
+    def test_new_job_has_first_seen(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, get_job_by_id
+            init_db()
+            job_id = insert_job({"title": "SWE", "url": "https://a.com/1", "company": "A"})
+            job = get_job_by_id(job_id)
+            assert job["first_seen_at"] != ""
+            assert job["last_seen_at"] != ""
+
+    def test_duplicate_updates_last_seen(self, tmp_path):
+        import time
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, get_job_by_id
+            init_db()
+            job_id = insert_job({"title": "SWE", "url": "https://a.com/1", "company": "A"})
+            job1 = get_job_by_id(job_id)
+            first_last_seen = job1["last_seen_at"]
+
+            time.sleep(0.05)
+            # Re-insert same URL → should update last_seen_at
+            insert_job({"title": "SWE", "url": "https://a.com/1", "company": "A"})
+            job2 = get_job_by_id(job_id)
+            assert job2["last_seen_at"] >= first_last_seen
+
+    def test_get_new_jobs_since(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, get_new_jobs_since
+            init_db()
+            insert_job({"title": "Fresh Job", "url": "https://a.com/1", "company": "A"})
+            new_jobs = get_new_jobs_since(hours=1)
+            assert len(new_jobs) == 1
+            assert new_jobs[0]["title"] == "Fresh Job"
+
+    def test_get_stale_jobs_empty_when_fresh(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, get_stale_jobs
+            init_db()
+            insert_job({"title": "Fresh", "url": "https://a.com/1", "company": "A"})
+            stale = get_stale_jobs(days=1)
+            assert len(stale) == 0
+
+
+# ---------------------------------------------------------------------------
+# FTS5 Full-Text Search Tests
+# ---------------------------------------------------------------------------
+
+class TestFTSSearch:
+    """Test full-text search with FTS5 (or LIKE fallback)."""
+
+    def test_search_fts_finds_by_title(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, search_fts, rebuild_fts_index
+            init_db()
+            insert_job({"title": "Machine Learning Engineer", "url": "https://a.com/1",
+                        "company": "DeepMind", "description": "Build ML models"})
+            insert_job({"title": "Backend Developer", "url": "https://b.com/2",
+                        "company": "Stripe", "description": "Build APIs"})
+            rebuild_fts_index()
+            results = search_fts("machine learning")
+            assert len(results) >= 1
+            assert results[0]["title"] == "Machine Learning Engineer"
+
+    def test_search_fts_finds_by_company(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, search_fts, rebuild_fts_index
+            init_db()
+            insert_job({"title": "SWE", "url": "https://a.com/1", "company": "Google"})
+            insert_job({"title": "SWE", "url": "https://b.com/2", "company": "Meta"})
+            rebuild_fts_index()
+            results = search_fts("Google")
+            assert len(results) >= 1
+            assert results[0]["company"] == "Google"
+
+    def test_rebuild_fts_returns_count(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, rebuild_fts_index
+            init_db()
+            insert_job({"title": "Job1", "url": "https://a.com/1", "company": "A"})
+            insert_job({"title": "Job2", "url": "https://b.com/2", "company": "B"})
+            count = rebuild_fts_index()
+            assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# ATS ID Dedup in DB Tests
+# ---------------------------------------------------------------------------
+
+class TestATSDedup:
+    """Test ATS job_id extraction on insert and dedup queries."""
+
+    def test_ats_id_stored_on_insert(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, get_job_by_id
+            init_db()
+            job_id = insert_job({
+                "title": "SWE",
+                "url": "https://boards.greenhouse.io/stripe/jobs/12345",
+                "company": "Stripe",
+            })
+            job = get_job_by_id(job_id)
+            assert job["ats_job_id"] == "12345"
+
+    def test_get_all_ats_ids(self, tmp_path):
+        with patch("src.discovery.database.DB_PATH", tmp_path / "test.db"):
+            from src.discovery.database import init_db, insert_job, get_all_ats_ids
+            init_db()
+            insert_job({
+                "title": "SWE",
+                "url": "https://boards.greenhouse.io/stripe/jobs/111",
+                "company": "Stripe",
+            })
+            insert_job({
+                "title": "Dev",
+                "url": "https://example.com/jobs/222",  # Not an ATS URL
+                "company": "Acme",
+            })
+            ats_ids = get_all_ats_ids()
+            assert "111" in ats_ids
+            assert len(ats_ids) == 1  # Only the Greenhouse one
