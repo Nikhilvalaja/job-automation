@@ -235,13 +235,172 @@ def _parse_hackernews(data: dict, source_name: str) -> list[dict]:
 def _parse_himalayas(data: dict, source_name: str) -> list[dict]:
     """Parse Himalayas API response."""
     jobs = []
-    for item in data.get("jobs", [])[:50]:
+    for item in data.get("jobs", []):
         jobs.append({
             "title": item.get("title", ""),
             "company": item.get("companyName", ""),
             "url": item.get("applicationLink", "") or f"https://himalayas.app/jobs/{item.get('slug', '')}",
             "description": _clean_html(item.get("description", "")),
-            "location": item.get("location", ""),
+            "location": item.get("location", "Remote"),
+            "source_name": source_name,
+        })
+    return jobs
+
+
+def _parse_remotive(data: dict, source_name: str) -> list[dict]:
+    """Parse Remotive API — all remote tech jobs."""
+    jobs = []
+    for item in data.get("jobs", []):
+        jobs.append({
+            "title": item.get("title", ""),
+            "company": item.get("company_name", ""),
+            "url": item.get("url", ""),
+            "description": _clean_html(item.get("description", "")),
+            "location": item.get("candidate_required_location", "Remote"),
+            "source_name": source_name,
+        })
+    return jobs
+
+
+def _parse_greenhouse(data: dict | list, source_name: str) -> list[dict]:
+    """Parse Greenhouse JSON API: boards-api.greenhouse.io/v1/boards/{slug}/jobs
+
+    Returns ALL open roles for the company — no arbitrary cap.
+    """
+    jobs_list = data.get("jobs", []) if isinstance(data, dict) else []
+    # Company name comes from job entries
+    jobs = []
+    for item in jobs_list:
+        location = ""
+        loc = item.get("location", {})
+        if isinstance(loc, dict):
+            location = loc.get("name", "")
+        elif isinstance(loc, str):
+            location = loc
+        url = item.get("absolute_url", "")
+        if not url:
+            url = f"https://boards.greenhouse.io/jobs/{item.get('id', '')}"
+        company = item.get("company_name", "") or source_name
+        jobs.append({
+            "title": item.get("title", ""),
+            "company": company,
+            "url": url,
+            "description": _clean_html(item.get("content", "") or ""),
+            "location": location,
+            "source_name": source_name,
+        })
+    return jobs
+
+
+def _parse_lever(data: list | dict, source_name: str) -> list[dict]:
+    """Parse Lever JSON API: api.lever.co/v0/postings/{slug}?mode=json"""
+    if isinstance(data, dict):
+        return []
+    jobs = []
+    for item in (data or []):
+        cats = item.get("categories", {}) or {}
+        location = cats.get("location", "")
+        if not location:
+            all_locs = cats.get("allLocations", [])
+            location = all_locs[0] if all_locs else ""
+        company = item.get("company", "") or source_name
+        jobs.append({
+            "title": item.get("text", ""),
+            "company": company,
+            "url": item.get("hostedUrl", "") or item.get("applyUrl", ""),
+            "description": _clean_html(
+                (item.get("descriptionPlain", "") or item.get("description", ""))[:2000]
+            ),
+            "location": location,
+            "source_name": source_name,
+        })
+    return jobs
+
+
+def _parse_ashby(data: dict | list, source_name: str) -> list[dict]:
+    """Parse Ashby JSON API: api.ashbyhq.com/posting-api/job-board/{slug}"""
+    posts = data.get("jobPostings", []) if isinstance(data, dict) else []
+    jobs = []
+    for item in posts:
+        location = item.get("location", "") or item.get("locationName", "")
+        jobs.append({
+            "title": item.get("title", ""),
+            "company": source_name,
+            "url": item.get("jobUrl", "") or item.get("applyUrl", ""),
+            "description": _clean_html(item.get("descriptionHtml", "") or ""),
+            "location": location,
+            "source_name": source_name,
+        })
+    return jobs
+
+
+def _parse_smartrecruiters(data: dict | list, source_name: str) -> list[dict]:
+    """Parse SmartRecruiters JSON API: careers.smartrecruiters.com/{company}/postings?format=json"""
+    if isinstance(data, list):
+        items = data
+    else:
+        items = data.get("content", [])
+    jobs = []
+    for item in items:
+        loc_data = item.get("location", {}) or {}
+        city = loc_data.get("city", "")
+        country = loc_data.get("country", "")
+        region = loc_data.get("region", "")
+        location = ", ".join(filter(None, [city, region, country]))
+        job_id = item.get("id", "")
+        ref_url = item.get("ref", "")
+        if not ref_url and job_id:
+            ref_url = f"https://careers.smartrecruiters.com/{source_name.replace(' ', '')}/{job_id}"
+        jobs.append({
+            "title": item.get("name", ""),
+            "company": source_name,
+            "url": ref_url,
+            "description": item.get("jobAd", {}).get("sections", {}).get("jobDescription", {}).get("text", "") if isinstance(item.get("jobAd"), dict) else "",
+            "location": location,
+            "source_name": source_name,
+        })
+    return jobs
+
+
+def _parse_muse(data: dict, source_name: str) -> list[dict]:
+    """Parse The Muse public API: themuse.com/api/public/jobs"""
+    jobs = []
+    for item in data.get("results", []):
+        # Extract location
+        locations = item.get("locations", [])
+        location = locations[0].get("name", "") if locations else ""
+        # Extract company
+        company_data = item.get("company", {})
+        company = company_data.get("name", "") if isinstance(company_data, dict) else ""
+        # Extract description (short version)
+        contents = item.get("contents", "")
+        from bs4 import BeautifulSoup
+        desc = BeautifulSoup(contents, "html.parser").get_text(separator=" ", strip=True)[:2000] if contents else ""
+        job_url = item.get("refs", {}).get("landing_page", "") if isinstance(item.get("refs"), dict) else ""
+        jobs.append({
+            "title": item.get("name", ""),
+            "company": company,
+            "url": job_url,
+            "description": desc,
+            "location": location,
+            "source_name": source_name,
+        })
+    return jobs
+
+
+def _parse_adzuna(data: dict, source_name: str) -> list[dict]:
+    """Parse Adzuna API: api.adzuna.com/v1/api/jobs/{country}/search/{page}"""
+    jobs = []
+    for item in data.get("results", []):
+        loc = item.get("location", {})
+        area = loc.get("area", []) if isinstance(loc, dict) else []
+        location = area[-1] if area else ""
+        jobs.append({
+            "title": item.get("title", ""),
+            "company": item.get("company", {}).get("display_name", "") if isinstance(item.get("company"), dict) else "",
+            "url": item.get("redirect_url", ""),
+            "description": _clean_html(item.get("description", "")),
+            "location": location,
             "source_name": source_name,
         })
     return jobs
@@ -260,6 +419,13 @@ API_PARSERS = {
     "findwork": _parse_findwork,
     "hackernews": _parse_hackernews,
     "himalayas": _parse_himalayas,
+    "remotive": _parse_remotive,
+    "greenhouse": _parse_greenhouse,
+    "lever": _parse_lever,
+    "ashby": _parse_ashby,
+    "smartrecruiters": _parse_smartrecruiters,
+    "muse": _parse_muse,
+    "adzuna": _parse_adzuna,
     "default": _parse_default,
 }
 
