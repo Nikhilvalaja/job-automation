@@ -12,10 +12,14 @@ on:
         required: false
         default: ''
 
+concurrency:
+  group: discovery-bot
+  cancel-in-progress: false   # never cancel a running discovery — let it finish
+
 jobs:
   discover-jobs:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 55        # 340+ sources need time; GitHub max is 6h
 
     steps:
       - name: Checkout repo
