@@ -43,9 +43,45 @@ from src.discovery.database import (
 from src.discovery.fetcher import fetch_source, get_last_fetch_meta
 from src.discovery.parser import JobParser
 from src.discovery.preferences import JobPreferences, score_job
-from src.discovery.sources import get_enabled_sources
+from src.discovery.jsonld import extract_jobs_from_url, JSONLD_COMPANY_REGISTRY
+from src.discovery.sources import get_enabled_sources, SourceType
 from src.notifications.telegram import TelegramNotifier
 from src.utils.logging import get_logger
+
+# ---------------------------------------------------------------------------
+# Query Grid — role families × location buckets for permissive APIs
+# ---------------------------------------------------------------------------
+
+ROLE_FAMILIES = [
+    "software engineer",
+    "backend engineer",
+    "data engineer",
+    "ML engineer",
+    "python developer",
+    "data analyst",
+    "business analyst",
+    "analytics engineer",
+    "devops engineer",
+    "platform engineer",
+]
+
+LOCATION_BUCKETS = [
+    "remote",
+    "New York",
+    "San Francisco",
+    "Seattle",
+    "Austin",
+    "Chicago",
+    "Boston",
+    "Atlanta",
+    "United States",
+]
+
+# Sources that support query + location parameters (use query grid)
+QUERY_GRID_SOURCES = {
+    "findwork",   # supports ?search=keyword
+    "jobicy",     # supports ?tag=keyword&location=...
+}
 
 logger = get_logger(__name__)
 
@@ -90,15 +126,39 @@ class DiscoveryBot(BaseBot):
         """Full discovery: fetch → score → store → parse.
 
         Uses 3-layer architecture:
+        - Query grid: role families × location buckets for permissive APIs
         - Adaptive scheduling (skip sources not yet due)
         - ETag/If-Modified-Since caching for efficient re-fetching
         - URL + fingerprint + ATS job_id dedup (cross-source matching)
+        - JSON-LD crawl for company career pages not on any ATS
         - Per-source stats tracking
         """
         prefs = self._preferences or JobPreferences.from_config()
 
-        query = prefs.keywords[0] if prefs.keywords else "software engineer"
-        location = prefs.locations[0] if prefs.locations else ""
+        # Build query grid: each (keyword, location) pair = one query
+        keywords = prefs.keywords or ROLE_FAMILIES[:3]
+        locations = prefs.locations or ["remote"]
+
+        # Limit grid size to avoid excessive API calls per run
+        # Full grid runs in scheduled modes; quick runs use first keyword only
+        max_keywords = len(ROLE_FAMILIES)
+        max_locations = len(LOCATION_BUCKETS)
+        query_grid = [
+            (kw, loc)
+            for kw in (keywords + ROLE_FAMILIES)[:max_keywords]
+            for loc in (locations + LOCATION_BUCKETS)[:max_locations]
+        ]
+        # Deduplicate query pairs while preserving order
+        seen_pairs: set[tuple] = set()
+        unique_grid: list[tuple] = []
+        for pair in query_grid:
+            if pair not in seen_pairs:
+                seen_pairs.add(pair)
+                unique_grid.append(pair)
+
+        logger.info(f"Query grid: {len(unique_grid)} combinations "
+                    f"({len(set(kw for kw, _ in unique_grid))} keywords × "
+                    f"{len(set(loc for _, loc in unique_grid))} locations)")
 
         # Load existing URLs, fingerprints, and ATS IDs from DB for dedup
         existing_urls = get_all_urls()
@@ -126,17 +186,34 @@ class DiscoveryBot(BaseBot):
         )
 
         # Fetch from due sources with ETag caching
+        # ATS company feeds (Greenhouse/Lever/Ashby/SmartRecruiters): one URL per company, no grid
+        # Permissive APIs (FindWork, Jobicy): run full query grid
         all_jobs: list[dict] = []
         source_errors = 0
 
         for source in due_sources:
             try:
-                # Get cached ETag/Last-Modified for conditional requests
                 cache = get_source_cache(source.name)
-                jobs = fetch_source(
-                    source, query=query, location=location,
-                    etag=cache.get("etag", ""), modified=cache.get("last_modified", ""),
-                )
+
+                # For query-grid-capable sources, run multiple queries
+                if source.parser in QUERY_GRID_SOURCES and not self.source_filter:
+                    source_jobs = []
+                    for query, location in unique_grid[:6]:  # Cap at 6 combos per grid source
+                        jobs = fetch_source(
+                            source, query=query, location=location,
+                            etag=cache.get("etag", ""), modified=cache.get("last_modified", ""),
+                        )
+                        source_jobs.extend(jobs)
+                    jobs = source_jobs
+                else:
+                    # Single fetch (ATS company feeds, RSS, fixed-URL APIs)
+                    query = keywords[0] if keywords else "software engineer"
+                    location = locations[0] if locations else ""
+                    jobs = fetch_source(
+                        source, query=query, location=location,
+                        etag=cache.get("etag", ""), modified=cache.get("last_modified", ""),
+                    )
+
                 all_jobs.extend(jobs)
 
                 # Track source stats with caching metadata
@@ -156,6 +233,27 @@ class DiscoveryBot(BaseBot):
                     source.name, source.source_type.value, source.url_template,
                     job_count=0, error=True,
                 )
+
+        # JSON-LD company career page crawl (for companies not on any ATS)
+        # Only run on full discovery cycles (not filtered/quick runs)
+        jsonld_jobs = 0
+        if not self.source_filter:
+            logger.info(f"JSON-LD crawl: checking {len(JSONLD_COMPANY_REGISTRY)} company career pages...")
+            for company_def in JSONLD_COMPANY_REGISTRY[:20]:  # Cap at 20 per run
+                try:
+                    jobs = extract_jobs_from_url(
+                        company_def["careers_url"],
+                        company_def.get("company_name", company_def["name"]),
+                    )
+                    for job in jobs:
+                        job["source_name"] = f"JSON-LD:{company_def['name']}"
+                    all_jobs.extend(jobs)
+                    jsonld_jobs += len(jobs)
+                except Exception as e:
+                    logger.debug(f"JSON-LD crawl failed for {company_def['name']}: {e}")
+
+            if jsonld_jobs > 0:
+                logger.info(f"JSON-LD crawl: found {jsonld_jobs} additional jobs")
 
         logger.info(f"Found {len(all_jobs)} total jobs across all sources")
 
@@ -253,16 +351,33 @@ class DiscoveryBot(BaseBot):
                 except Exception:
                     pass
 
-        # Telegram notification
-        if stored > 0 and not self.dry_run and self._notifier and self._notifier.is_configured():
-            job_list = "\n".join(
-                f"  - {j['title']} at {j.get('company', '?')}"
-                for j in matched[:10]
-            )
-            more = f"\n  ...and {stored - 10} more" if stored > 10 else ""
-            self._notifier.send_message(
-                f"*Discovery Bot: {stored} New Jobs Found*\n\n{job_list}{more}"
-            )
+        # Telegram notification — only for high-signal new jobs
+        # Filters: first_seen within last 2 hours + score >= priority threshold
+        if not self.dry_run and self._notifier and self._notifier.is_configured():
+            from src.discovery.database import get_new_jobs_since
+            PRIORITY_SCORE_THRESHOLD = 0.3  # Only notify if score >= 30%
+            new_jobs = get_new_jobs_since(hours=2)
+            priority_jobs = [
+                j for j in new_jobs
+                if (j.get("match_score") or 0) >= PRIORITY_SCORE_THRESHOLD
+            ]
+
+            if priority_jobs:
+                job_lines = "\n".join(
+                    f"  [{j.get('match_score', 0):.0%}] {j['title']} @ {j.get('company', '?')}"
+                    for j in priority_jobs[:8]
+                )
+                more = f"\n  ...and {len(priority_jobs) - 8} more" if len(priority_jobs) > 8 else ""
+                self._notifier.send_message(
+                    f"*🎯 {len(priority_jobs)} High-Match Jobs (last 2h)*\n\n{job_lines}{more}\n\n"
+                    f"_Total stored this run: {stored}_"
+                )
+            elif stored > 0:
+                # Low-signal summary (all stored, no high-priority matches)
+                self._notifier.send_message(
+                    f"*Discovery: {stored} new jobs stored* "
+                    f"(none scored ≥{PRIORITY_SCORE_THRESHOLD:.0%} this cycle)"
+                )
 
         # Rebuild FTS index after batch insert
         if stored > 0 and not self.dry_run:

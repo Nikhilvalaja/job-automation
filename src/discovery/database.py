@@ -201,6 +201,34 @@ def init_db() -> None:
                 first_seen TEXT DEFAULT '',
                 last_seen TEXT DEFAULT ''
             );
+
+            -- Cross-source job mapping (same job seen in multiple sources)
+            CREATE TABLE IF NOT EXISTS jobs_source_map (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                primary_job_id TEXT NOT NULL,       -- ID in discovered_jobs (canonical record)
+                duplicate_job_id TEXT,              -- ID of duplicate (if also stored)
+                source_name TEXT NOT NULL,          -- source that found this duplicate
+                source_url TEXT NOT NULL,           -- URL as seen in this source
+                similarity_score REAL DEFAULT 1.0,  -- 1.0=exact, <1.0=soft match
+                match_type TEXT DEFAULT 'url',      -- url, ats_id, fingerprint, embedding
+                seen_at TEXT NOT NULL,
+                UNIQUE(primary_job_id, source_name)
+            );
+
+            -- Query grid tracking (per role+location query state)
+            CREATE TABLE IF NOT EXISTS query_grid_state (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_name TEXT NOT NULL,
+                query_key TEXT NOT NULL,            -- role family keyword
+                location_key TEXT NOT NULL,         -- location bucket
+                last_fetched_at TEXT DEFAULT '',
+                next_cursor TEXT DEFAULT '',        -- pagination cursor
+                jobs_found_last_run INTEGER DEFAULT 0,
+                total_jobs_found INTEGER DEFAULT 0,
+                error_count INTEGER DEFAULT 0,
+                fetch_interval_minutes INTEGER DEFAULT 120,
+                UNIQUE(source_name, query_key, location_key)
+            );
         """)
 
         # Step 2: Migrate columns for existing DBs (BEFORE index creation)
@@ -709,6 +737,28 @@ def get_all_ats_ids() -> set[str]:
         return {r["ats_job_id"] for r in rows}
     except Exception:
         return set()
+    finally:
+        conn.close()
+
+
+def record_source_map(primary_job_id: str, source_name: str, source_url: str,
+                      match_type: str = "fingerprint", similarity: float = 1.0) -> None:
+    """Record a cross-source duplicate in jobs_source_map.
+
+    Call this when a job is skipped as a duplicate so we track where else it appeared.
+    """
+    conn = get_db()
+    try:
+        conn.execute(
+            """INSERT OR IGNORE INTO jobs_source_map
+               (primary_job_id, source_name, source_url, similarity_score, match_type, seen_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (primary_job_id, source_name, source_url, similarity, match_type,
+             datetime.now().isoformat()),
+        )
+        conn.commit()
+    except Exception:
+        pass
     finally:
         conn.close()
 
