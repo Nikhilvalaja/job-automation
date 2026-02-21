@@ -218,7 +218,7 @@ class DiscoveryBot(BaseBot):
                 cache = get_source_cache(source.name)
 
                 # For query-grid-capable sources, run multiple queries
-                if source.parser in QUERY_GRID_SOURCES and not self.source_filter:
+                if source.parser in QUERY_GRID_SOURCES and self.source_filter is None:
                     source_jobs = []
                     for query, location in unique_grid[:6]:  # Cap at 6 combos per grid source
                         jobs = fetch_source(
@@ -259,7 +259,7 @@ class DiscoveryBot(BaseBot):
         # JSON-LD company career page crawl (for companies not on any ATS)
         # Only run on full discovery cycles (not filtered/quick runs)
         jsonld_jobs = 0
-        if not self.source_filter:
+        if self.source_filter is None:
             logger.info(f"JSON-LD crawl: checking {len(JSONLD_COMPANY_REGISTRY)} company career pages...")
             for company_def in JSONLD_COMPANY_REGISTRY[:20]:  # Cap at 20 per run
                 try:
