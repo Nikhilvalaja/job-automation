@@ -156,10 +156,22 @@ JOB_BOARD_SOURCES = [
     JobSource(name="The Muse (Analytics)", source_type=SourceType.API,
               url_template="https://www.themuse.com/api/public/jobs?level=Mid%20Level&level=Entry%20Level&level=Senior%20Level&category=Analytics&page=0&descending=true",
               parser="muse", rate_limit_seconds=2.0),
-    # Adzuna (needs free API key — set ADZUNA_APP_ID + ADZUNA_API_KEY in .env)
-    # JobSource(name="Adzuna (US Tech)", source_type=SourceType.API,
-    #           url_template="https://api.adzuna.com/v1/api/jobs/us/search/1?app_id={ADZUNA_APP_ID}&app_key={ADZUNA_API_KEY}&results_per_page=50&what=software+engineer&content-type=application/json",
-    #           parser="adzuna", rate_limit_seconds=2.0, enabled=False),
+    # Adzuna API — 5 role-specific searches (50 results per page, sorted by date)
+    JobSource(name="Adzuna (Software Engineer)", source_type=SourceType.API,
+              url_template="https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b&results_per_page=50&what=software+engineer&sort_by=date&content-type=application/json",
+              parser="adzuna", rate_limit_seconds=2.0),
+    JobSource(name="Adzuna (Data Engineer)", source_type=SourceType.API,
+              url_template="https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b&results_per_page=50&what=data+engineer&sort_by=date&content-type=application/json",
+              parser="adzuna", rate_limit_seconds=2.0),
+    JobSource(name="Adzuna (ML Engineer)", source_type=SourceType.API,
+              url_template="https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b&results_per_page=50&what=machine+learning+engineer&sort_by=date&content-type=application/json",
+              parser="adzuna", rate_limit_seconds=2.0),
+    JobSource(name="Adzuna (Python Developer)", source_type=SourceType.API,
+              url_template="https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b&results_per_page=50&what=python+developer&sort_by=date&content-type=application/json",
+              parser="adzuna", rate_limit_seconds=2.0),
+    JobSource(name="Adzuna (Backend Engineer)", source_type=SourceType.API,
+              url_template="https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b&results_per_page=50&what=backend+engineer&sort_by=date&content-type=application/json",
+              parser="adzuna", rate_limit_seconds=2.0),
 ]
 
 # ---------------------------------------------------------------------------

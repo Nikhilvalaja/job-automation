@@ -401,6 +401,7 @@ def _parse_adzuna(data: dict, source_name: str) -> list[dict]:
             "url": item.get("redirect_url", ""),
             "description": _clean_html(item.get("description", "")),
             "location": location,
+            "posted_at": item.get("created", ""),
             "source_name": source_name,
         })
     return jobs
