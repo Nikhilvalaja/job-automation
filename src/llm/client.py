@@ -9,7 +9,7 @@ Only logs token counts and error messages.
 
 from __future__ import annotations
 
-from openai import OpenAI, APIError, RateLimitError
+from openai import OpenAI, APIError, RateLimitError, AuthenticationError
 
 from src.config import get_settings
 from src.utils.logging import get_logger
@@ -21,6 +21,9 @@ logger = get_logger(__name__)
 class LLMClient:
     """Wrapper around OpenAI's chat completion API."""
 
+    # Class-level flag: once quota is hit, stop trying for the rest of the session
+    _quota_exceeded: bool = False
+
     def __init__(self) -> None:
         settings = get_settings()
         self._api_key = settings.openai_api_key
@@ -28,7 +31,9 @@ class LLMClient:
         self._client: OpenAI | None = None
 
     def is_configured(self) -> bool:
-        """Check if OpenAI API key is set."""
+        """Check if OpenAI API key is set AND quota is not exceeded."""
+        if LLMClient._quota_exceeded:
+            return False
         return bool(self._api_key)
 
     @property
@@ -40,7 +45,7 @@ class LLMClient:
             self._client = OpenAI(api_key=self._api_key)
         return self._client
 
-    @retry(max_attempts=3, base_delay=2.0, exceptions=(APIError, RateLimitError))
+    @retry(max_attempts=2, base_delay=1.0, exceptions=(APIError,))
     def chat(
         self,
         system_prompt: str,
@@ -74,3 +79,22 @@ class LLMClient:
 
         logger.info(f"LLM response: {tokens} tokens used (model={self._model})")
         return {"text": text, "tokens_used": tokens}
+
+    def chat_safe(self, system_prompt: str, user_prompt: str,
+                  temperature: float = 0.7, max_tokens: int = 2000) -> dict | None:
+        """Like chat() but catches quota/auth errors and disables LLM for the session."""
+        try:
+            return self.chat(system_prompt, user_prompt, temperature, max_tokens)
+        except RateLimitError as e:
+            if "insufficient_quota" in str(e) or "quota" in str(e).lower():
+                LLMClient._quota_exceeded = True
+                logger.warning("OpenAI quota exceeded — disabling LLM for this session. "
+                               "Add credits at platform.openai.com/usage")
+            return None
+        except AuthenticationError:
+            LLMClient._quota_exceeded = True
+            logger.warning("OpenAI authentication failed — disabling LLM for this session.")
+            return None
+        except Exception as e:
+            logger.warning(f"OpenAI call failed: {e}")
+            return None

@@ -163,6 +163,20 @@ def init_db() -> None:
                 last_seen_at TEXT DEFAULT '',          -- last time this URL appeared in a fetch
                 posted_at TEXT DEFAULT '',             -- original posting date (from feed if available)
 
+                -- Backfill flag — set 1 for historical records (no alert sent)
+                is_backfill INTEGER DEFAULT 0,
+
+                -- Full raw API response payload (JSON string) for re-normalization
+                raw_payload_json TEXT DEFAULT '',
+
+                -- Quality signals
+                description_length INTEGER DEFAULT 0,
+                is_staffing_agency INTEGER DEFAULT 0,  -- 1 = flagged as staffing/recruiting firm
+
+                -- Alert tracking (idempotent Telegram notifications)
+                alerted_at TEXT DEFAULT '',         -- ISO timestamp when Telegram alert sent, empty=not yet
+                alert_status TEXT DEFAULT '',       -- 'sent', 'skipped_backfill', 'skipped_score'
+
                 -- Timestamps
                 discovered_at TEXT NOT NULL,
                 parsed_at TEXT DEFAULT '',
@@ -215,6 +229,24 @@ def init_db() -> None:
                 UNIQUE(primary_job_id, source_name)
             );
 
+            -- Async fetch queue: discovery finds URLs, workers fetch details
+            -- Prevents long-running fetches from blocking the discovery loop
+            CREATE TABLE IF NOT EXISTS job_fetch_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_type TEXT NOT NULL,          -- api, ats, jsonld, gmail, rss
+                fetch_key TEXT NOT NULL UNIQUE,     -- URL or job_id to fetch
+                source_name TEXT DEFAULT '',        -- which source queued this
+                status TEXT DEFAULT 'pending',      -- pending, running, done, error
+                attempts INTEGER DEFAULT 0,
+                max_attempts INTEGER DEFAULT 3,
+                enqueued_at TEXT NOT NULL,
+                started_at TEXT DEFAULT '',
+                completed_at TEXT DEFAULT '',
+                next_retry_at TEXT DEFAULT '',      -- backoff scheduling
+                error_message TEXT DEFAULT '',
+                result_job_id TEXT DEFAULT ''       -- ID in discovered_jobs once stored
+            );
+
             -- Query grid tracking (per role+location query state)
             CREATE TABLE IF NOT EXISTS query_grid_state (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -247,6 +279,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_fingerprint ON discovered_jobs(fingerprint);
             CREATE INDEX IF NOT EXISTS idx_ats_job_id ON discovered_jobs(ats_job_id);
             CREATE INDEX IF NOT EXISTS idx_first_seen ON discovered_jobs(first_seen_at);
+            CREATE INDEX IF NOT EXISTS idx_alerted_at ON discovered_jobs(alerted_at);
+            CREATE INDEX IF NOT EXISTS idx_fetch_queue_status ON job_fetch_queue(status, next_retry_at);
         """)
 
         # Step 4: Create FTS5 full-text search index (if not exists)
@@ -278,6 +312,12 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         ("first_seen_at", "TEXT DEFAULT ''"),
         ("last_seen_at", "TEXT DEFAULT ''"),
         ("posted_at", "TEXT DEFAULT ''"),
+        ("is_backfill", "INTEGER DEFAULT 0"),
+        ("raw_payload_json", "TEXT DEFAULT ''"),
+        ("description_length", "INTEGER DEFAULT 0"),
+        ("is_staffing_agency", "INTEGER DEFAULT 0"),
+        ("alerted_at", "TEXT DEFAULT ''"),
+        ("alert_status", "TEXT DEFAULT ''"),
     ]
     for col_name, col_type in job_migrations:
         if col_name not in existing:
@@ -355,24 +395,38 @@ def insert_job(job: dict) -> str | None:
         now = datetime.now().isoformat()
         posted = job.get("posted_at", "") or ""
 
+        import json as _json
+        desc = job.get("description", "")[:5000]
+        raw_payload = job.get("raw_payload_json", "")
+        if not raw_payload and "raw_payload" in job:
+            try:
+                raw_payload = _json.dumps(job["raw_payload"])[:10000]
+            except Exception:
+                raw_payload = ""
+
         conn.execute(
             """INSERT INTO discovered_jobs
                (id, title, company, url, description, location, source_name,
                 match_score, fingerprint, ats_job_id, first_seen_at, last_seen_at,
-                posted_at, discovered_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                posted_at, discovered_at, is_backfill, raw_payload_json,
+                description_length, is_staffing_agency)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 job_id,
                 job.get("title", ""),
                 job.get("company", ""),
                 job.get("url", ""),
-                job.get("description", "")[:5000],
+                desc,
                 job.get("location", ""),
                 job.get("source_name", ""),
                 job.get("score", 0.0),
                 fp, ats_id,
                 now, now,  # first_seen = last_seen = now
                 posted, now,
+                1 if job.get("is_backfill") else 0,
+                raw_payload,
+                len(desc),
+                1 if job.get("is_staffing_agency") else 0,
             ),
         )
         # Register company in the registry
@@ -768,10 +822,14 @@ def record_source_map(primary_job_id: str, source_name: str, source_url: str,
 # ---------------------------------------------------------------------------
 
 def get_new_jobs_since(hours: int = 2) -> list[dict]:
-    """Get jobs first seen within the last N hours.
+    """Get unalerted jobs first seen within the last N hours.
 
-    Use this to notify only about genuinely new discoveries,
-    filtering out re-fetched old postings.
+    Filters:
+    - first_seen_at within the window (not stale)
+    - is_backfill=0 (never alert for historical records)
+    - alerted_at='' (not yet notified — idempotent)
+
+    Use this for Telegram notifications.
     """
     conn = get_db()
     try:
@@ -779,10 +837,139 @@ def get_new_jobs_since(hours: int = 2) -> list[dict]:
         rows = conn.execute(
             """SELECT * FROM discovered_jobs
                WHERE first_seen_at >= ?
+                 AND is_backfill = 0
+                 AND (alerted_at IS NULL OR alerted_at = '')
                ORDER BY match_score DESC, first_seen_at DESC""",
             (cutoff,),
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_alerted(job_id: str) -> None:
+    """Mark a job as having been alerted via Telegram (idempotency guard)."""
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE discovered_jobs SET alerted_at=?, alert_status='sent', updated_at=? WHERE id=?",
+            (datetime.now().isoformat(), datetime.now().isoformat(), job_id),
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def mark_alert_skipped(job_id: str, reason: str) -> None:
+    """Mark a job as alert-skipped so we don't check it again."""
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE discovered_jobs SET alerted_at=?, alert_status=?, updated_at=? WHERE id=?",
+            (datetime.now().isoformat(), reason, datetime.now().isoformat(), job_id),
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Job Fetch Queue — decouple discovery from detail fetching
+# ---------------------------------------------------------------------------
+
+def enqueue_fetch(fetch_key: str, source_type: str, source_name: str = "") -> bool:
+    """Add a URL/job_id to the fetch queue.
+
+    Returns True if newly enqueued, False if already in queue.
+    """
+    conn = get_db()
+    try:
+        conn.execute(
+            """INSERT OR IGNORE INTO job_fetch_queue
+               (source_type, fetch_key, source_name, status, enqueued_at)
+               VALUES (?, ?, ?, 'pending', ?)""",
+            (source_type, fetch_key, source_name, datetime.now().isoformat()),
+        )
+        conn.commit()
+        return conn.total_changes > 0
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def get_pending_queue(limit: int = 50) -> list[dict]:
+    """Get pending fetch queue items ready to process (respects next_retry_at backoff)."""
+    conn = get_db()
+    try:
+        now = datetime.now().isoformat()
+        rows = conn.execute(
+            """SELECT * FROM job_fetch_queue
+               WHERE status = 'pending'
+                 AND attempts < max_attempts
+                 AND (next_retry_at = '' OR next_retry_at <= ?)
+               ORDER BY enqueued_at ASC
+               LIMIT ?""",
+            (now, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def update_queue_item(item_id: int, status: str,
+                      error_message: str = "", result_job_id: str = "") -> None:
+    """Update a fetch queue item's status."""
+    conn = get_db()
+    try:
+        now = datetime.now().isoformat()
+        if status == "error":
+            # Exponential backoff: 5min, 15min, 45min
+            row = conn.execute(
+                "SELECT attempts FROM job_fetch_queue WHERE id=?", (item_id,)
+            ).fetchone()
+            attempts = (row["attempts"] if row else 0) + 1
+            backoff_minutes = 5 * (3 ** (attempts - 1))
+            next_retry = (datetime.now() + timedelta(minutes=backoff_minutes)).isoformat()
+            conn.execute(
+                """UPDATE job_fetch_queue
+                   SET status='pending', attempts=?, error_message=?, next_retry_at=?
+                   WHERE id=?""",
+                (attempts, error_message, next_retry, item_id),
+            )
+        elif status == "done":
+            conn.execute(
+                """UPDATE job_fetch_queue
+                   SET status='done', completed_at=?, result_job_id=?, attempts=attempts+1
+                   WHERE id=?""",
+                (now, result_job_id, item_id),
+            )
+        elif status == "running":
+            conn.execute(
+                "UPDATE job_fetch_queue SET status='running', started_at=? WHERE id=?",
+                (now, item_id),
+            )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def get_queue_stats() -> dict:
+    """Get fetch queue statistics."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM job_fetch_queue GROUP BY status"
+        ).fetchall()
+        return {r["status"]: r["cnt"] for r in rows}
+    except Exception:
+        return {}
     finally:
         conn.close()
 
@@ -811,30 +998,63 @@ def get_stale_jobs(days: int = 30) -> list[dict]:
 def get_adaptive_interval(source_name: str) -> int:
     """Get the recommended fetch interval for a source based on its history.
 
-    Rules:
-    - 3+ consecutive errors → back off to 360 min
-    - Last 3 fetches yielded 0 jobs → slow to 240 min
-    - Productive source (10+ jobs last fetch) → speed up to 60 min
+    Rules (smarter adaptive scheduling):
+    - 5+ consecutive errors → 720 min (12h backoff) + temporarily disable
+    - 3-4 consecutive errors → 360 min (6h backoff)
+    - 1-2 consecutive errors → 180 min
+    - Last fetch yielded 0 AND total 0 jobs ever → 480 min (8h, dead source)
+    - Last fetch yielded 0 AND has history → 240 min (cooling off)
+    - Last 3 fetches all yielded 0 → 360 min (slow down)
+    - Last fetch yielded 50+ jobs → 30 min (very hot source)
+    - Last fetch yielded 20+ jobs → 45 min (hot source)
+    - Last fetch yielded 5+ jobs → 60 min (productive)
     - Default: 120 min
     """
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT consecutive_errors, last_job_count, total_jobs_found FROM discovery_sources WHERE source_name=?",
+            """SELECT consecutive_errors, last_job_count, total_jobs_found,
+                      enabled, fetch_interval_minutes
+               FROM discovery_sources WHERE source_name=?""",
             (source_name,),
         ).fetchone()
         if not row:
-            return 120  # Default
+            return 120  # New source, use default
 
-        if row["consecutive_errors"] >= 3:
-            return 360  # Back off on repeated errors
-        if row["last_job_count"] == 0 and row["total_jobs_found"] == 0:
-            return 360  # Never produced anything
-        if row["last_job_count"] == 0:
-            return 240  # Recently dry
-        if row["last_job_count"] >= 10:
-            return 60   # Very productive
-        return 120  # Normal
+        errors = row["consecutive_errors"] or 0
+
+        # Error-based backoff
+        if errors >= 5:
+            # Temporarily disable: mark source as disabled after 5 consecutive errors
+            try:
+                conn.execute(
+                    "UPDATE discovery_sources SET enabled=0, fetch_interval_minutes=720 WHERE source_name=?",
+                    (source_name,),
+                )
+                conn.commit()
+            except Exception:
+                pass
+            return 720  # 12h
+        if errors >= 3:
+            return 360  # 6h
+        if errors >= 1:
+            return 180  # 3h
+
+        # Yield-based intervals
+        last_count = row["last_job_count"] or 0
+        total = row["total_jobs_found"] or 0
+
+        if last_count == 0 and total == 0:
+            return 480  # Dead source — check every 8h
+        if last_count == 0:
+            return 240  # Recently dry — slow down
+        if last_count >= 50:
+            return 30   # Very hot source — poll every 30 min
+        if last_count >= 20:
+            return 45   # Hot source
+        if last_count >= 5:
+            return 60   # Productive
+        return 120  # Normal cadence
     except Exception:
         return 120
     finally:
@@ -845,21 +1065,147 @@ def should_fetch_source(source_name: str) -> bool:
     """Check if enough time has passed since last fetch for this source.
 
     Uses adaptive intervals based on source history.
+    Skips disabled sources (consecutive_errors >= 5).
     """
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT last_fetched_at, consecutive_errors, last_job_count, total_jobs_found FROM discovery_sources WHERE source_name=?",
+            """SELECT last_fetched_at, consecutive_errors, last_job_count,
+                      total_jobs_found, enabled
+               FROM discovery_sources WHERE source_name=?""",
             (source_name,),
         ).fetchone()
         if not row or not row["last_fetched_at"]:
-            return True  # Never fetched
+            return True  # Never fetched — always fetch
+
+        # Skip if explicitly disabled (too many errors)
+        if row["enabled"] == 0:
+            return False
 
         interval = get_adaptive_interval(source_name)
         last_fetch = datetime.fromisoformat(row["last_fetched_at"])
         return datetime.now() - last_fetch >= timedelta(minutes=interval)
     except Exception:
-        return True  # Fetch on error
+        return True  # Fetch on error (safe default)
+    finally:
+        conn.close()
+
+
+def reenable_source(source_name: str) -> None:
+    """Re-enable a source that was disabled due to errors (e.g., after manual check)."""
+    conn = get_db()
+    try:
+        conn.execute(
+            """UPDATE discovery_sources
+               SET enabled=1, consecutive_errors=0, fetch_interval_minutes=120
+               WHERE source_name=?""",
+            (source_name,),
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Pipeline Health Metrics
+# ---------------------------------------------------------------------------
+
+def get_pipeline_health() -> dict:
+    """Compute pipeline health metrics.
+
+    Returns:
+        jobs_per_day: new jobs ingested in last 24h
+        jobs_per_hour: new jobs ingested in last 1h
+        sources_total: total enabled sources
+        sources_failing: sources with consecutive_errors >= 1
+        sources_disabled: sources with enabled=0
+        sources_dry: sources with last_job_count=0 and total>0
+        avg_freshness_hours: avg hours between posting_at and first_seen_at
+        alert_success_rate: pct of alertable jobs that were alerted
+        pipeline_healthy: True if jobs_per_day > 0 and sources_failing < 50%
+    """
+    conn = get_db()
+    try:
+        now = datetime.now()
+        day_cutoff = (now - timedelta(hours=24)).isoformat()
+        hour_cutoff = (now - timedelta(hours=1)).isoformat()
+
+        jobs_day = conn.execute(
+            "SELECT COUNT(*) as cnt FROM discovered_jobs WHERE first_seen_at >= ? AND is_backfill=0",
+            (day_cutoff,),
+        ).fetchone()["cnt"]
+
+        jobs_hour = conn.execute(
+            "SELECT COUNT(*) as cnt FROM discovered_jobs WHERE first_seen_at >= ? AND is_backfill=0",
+            (hour_cutoff,),
+        ).fetchone()["cnt"]
+
+        # Source health
+        src_stats = conn.execute(
+            """SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN enabled=0 THEN 1 ELSE 0 END) as disabled,
+                SUM(CASE WHEN consecutive_errors >= 1 AND enabled=1 THEN 1 ELSE 0 END) as failing,
+                SUM(CASE WHEN last_job_count=0 AND total_jobs_found > 0 AND enabled=1 THEN 1 ELSE 0 END) as dry
+               FROM discovery_sources"""
+        ).fetchone()
+
+        # Alert success rate: of jobs that could be alerted (new, not backfill),
+        # what fraction were actually alerted?
+        alertable = conn.execute(
+            """SELECT COUNT(*) as cnt FROM discovered_jobs
+               WHERE is_backfill=0 AND first_seen_at >= ?""",
+            (day_cutoff,),
+        ).fetchone()["cnt"]
+
+        alerted = conn.execute(
+            """SELECT COUNT(*) as cnt FROM discovered_jobs
+               WHERE is_backfill=0 AND alert_status='sent' AND first_seen_at >= ?""",
+            (day_cutoff,),
+        ).fetchone()["cnt"]
+
+        alert_rate = (alerted / alertable) if alertable > 0 else 0.0
+
+        # Freshness: avg delay from posting_at to first_seen_at (hours)
+        # Only for jobs where posting_at is set and not empty
+        fresh_rows = conn.execute(
+            """SELECT first_seen_at, posted_at FROM discovered_jobs
+               WHERE posted_at != '' AND first_seen_at != ''
+               ORDER BY first_seen_at DESC LIMIT 500"""
+        ).fetchall()
+        delays = []
+        for row in fresh_rows:
+            try:
+                seen = datetime.fromisoformat(row["first_seen_at"])
+                posted = datetime.fromisoformat(row["posted_at"])
+                delay_h = (seen - posted).total_seconds() / 3600
+                if 0 <= delay_h <= 720:  # Ignore outliers > 30 days
+                    delays.append(delay_h)
+            except Exception:
+                pass
+        avg_freshness = sum(delays) / len(delays) if delays else None
+
+        total_src = src_stats["total"] or 0
+        failing_src = src_stats["failing"] or 0
+
+        return {
+            "jobs_per_day": jobs_day,
+            "jobs_per_hour": jobs_hour,
+            "sources_total": total_src,
+            "sources_failing": failing_src,
+            "sources_disabled": src_stats["disabled"] or 0,
+            "sources_dry": src_stats["dry"] or 0,
+            "avg_freshness_hours": round(avg_freshness, 1) if avg_freshness is not None else None,
+            "alert_success_rate": round(alert_rate * 100, 1),
+            "alerted_today": alerted,
+            "alertable_today": alertable,
+            "pipeline_healthy": jobs_day > 0 and (failing_src < total_src * 0.5 if total_src else False),
+        }
+    except Exception as e:
+        logger.warning(f"Pipeline health check failed: {e}")
+        return {"pipeline_healthy": False, "error": str(e)}
     finally:
         conn.close()
 

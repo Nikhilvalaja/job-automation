@@ -443,3 +443,90 @@ def fetch_source(source: JobSource, query: str = "", location: str = "",
     else:
         logger.warning(f"Unknown source type: {source.source_type}")
         return []
+
+
+def fetch_paginated(source: JobSource, query: str = "", location: str = "",
+                    max_pages: int = 10) -> list[dict]:
+    """Fetch multiple pages from a paginated API source.
+
+    Used for backfill mode and high-volume collection from APIs that support
+    page-based pagination (The Muse, Adzuna, etc.).
+    """
+    if source.parser == "muse":
+        return _fetch_muse_paginated(source, max_pages)
+    elif source.parser == "adzuna":
+        return _fetch_adzuna_paginated(source, query, location, max_pages)
+    else:
+        return fetch_api(source, query, location)
+
+
+def _fetch_muse_paginated(source: JobSource, max_pages: int = 10) -> list[dict]:
+    """Fetch multiple pages from The Muse API (reads page_count from response)."""
+    import re as _re
+    all_jobs: list[dict] = []
+    base_url = source.url_template
+
+    # Replace page=0 with a template
+    if "page=0" in base_url:
+        base_template = base_url.replace("page=0", "page={page}")
+    else:
+        base_template = base_url + "&page={page}"
+
+    try:
+        first_url = base_template.format(page=0)
+        _rate_limit(first_url, source.rate_limit_seconds)
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.get(first_url)
+            resp.raise_for_status()
+            data = resp.json()
+
+        all_jobs.extend(_parse_muse(data, source.name))
+        total_pages = min(int(data.get("page_count", 1)), max_pages)
+        logger.info(f"[Muse paginated] {source.name}: fetching {total_pages} pages")
+
+        for page in range(1, total_pages):
+            try:
+                url = base_template.format(page=page)
+                _rate_limit(url, source.rate_limit_seconds)
+                with httpx.Client(timeout=30.0) as client:
+                    resp = client.get(url)
+                    resp.raise_for_status()
+                    page_data = resp.json()
+                page_jobs = _parse_muse(page_data, source.name)
+                if not page_jobs:
+                    break
+                all_jobs.extend(page_jobs)
+            except Exception as e:
+                logger.warning(f"[Muse page {page}] {e}")
+                break
+
+        logger.info(f"[Muse paginated] {source.name}: {len(all_jobs)} total jobs")
+    except Exception as e:
+        logger.error(f"Muse paginated fetch failed for {source.name}: {e}")
+
+    return all_jobs
+
+
+def _fetch_adzuna_paginated(source: JobSource, query: str, location: str,
+                             max_pages: int = 5) -> list[dict]:
+    """Fetch multiple pages from Adzuna (/search/1, /search/2, ...)."""
+    import re as _re
+    all_jobs: list[dict] = []
+
+    for page in range(1, max_pages + 1):
+        try:
+            url = _re.sub(r"/search/\d+", f"/search/{page}", source.url_template)
+            _rate_limit(url, source.rate_limit_seconds)
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+            jobs = _parse_adzuna(data, source.name)
+            if not jobs:
+                break
+            all_jobs.extend(jobs)
+        except Exception as e:
+            logger.warning(f"[Adzuna page {page}] {e}")
+            break
+
+    return all_jobs

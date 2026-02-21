@@ -19,7 +19,7 @@
 | M9 | Discovery Bot | 297 sources, SQLite DB, FTS5, adaptive scheduling, 3-pass dedup | 89 |
 | M10 | Resume Intelligence | Skill taxonomy (500+), JD normalizer, resume parser, scorer, backup/retention, dashboard v2 | 153 |
 
-**Current total: 312 tests passing**
+**Current total: 350 tests passing**
 
 ---
 
@@ -808,12 +808,13 @@ same location/industry          → 0.3
 M10: Resume Intelligence + Safety   <-- DONE: JD normalization + resume parsing
      |                                   + embeddings + scoring + backups
      |                                   + pagination + retention + dashboard UX
+     v
+M11: Resume Optimizer                <-- DONE: constrained rewriter + validator
+     |                                   + skill registry (212 skills, computed transfer)
+     |                                   + Resume Studio tab + variant store
 YOU ARE HERE
      |
      v
-M11: Resume Optimizer                <-- LLM rewrite under constraints
-     |                                   + validation engine (zero tolerance)
-     v                                   + Resume Studio tab + DOCX export
 M12: CRM + Contacts                  <-- relationship database, cooldowns
      |                                   + CRM tab in dashboard
      v

@@ -20,7 +20,9 @@ class JobPreferences:
     keywords: list[str] = field(default_factory=list)
     excluded_keywords: list[str] = field(default_factory=list)
     locations: list[str] = field(default_factory=list)
-    min_match_score: float = 0.3
+    # Lowered from 0.3 to 0.0 — save everything not explicitly excluded.
+    # Dashboard filters let you narrow down. Better to have too many than too few.
+    min_match_score: float = 0.0
 
     @classmethod
     def from_config(cls) -> "JobPreferences":

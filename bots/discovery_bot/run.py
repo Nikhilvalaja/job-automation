@@ -35,18 +35,29 @@ from src.discovery.database import (
     insert_job,
     extract_ats_job_id,
     rebuild_fts_index,
+    record_source_map,
     should_fetch_source,
     update_parsed_fields,
     update_source_stats,
     _compute_fingerprint,
+    mark_alerted,
+    mark_alert_skipped,
+    enqueue_fetch,
+    get_pending_queue,
+    update_queue_item,
 )
-from src.discovery.fetcher import fetch_source, get_last_fetch_meta
+from src.discovery.fetcher import fetch_source, fetch_paginated, get_last_fetch_meta
 from src.discovery.parser import JobParser
 from src.discovery.preferences import JobPreferences, score_job
 from src.discovery.jsonld import extract_jobs_from_url, JSONLD_COMPANY_REGISTRY
+from src.discovery.quality import filter_job, normalize_title, normalize_company_name
 from src.discovery.sources import get_enabled_sources, SourceType
 from src.notifications.telegram import TelegramNotifier
 from src.utils.logging import get_logger
+from src.discovery.database import get_pipeline_health
+
+# Paginated API parsers that support backfill mode
+PAGINATED_PARSERS = {"muse", "adzuna"}
 
 # ---------------------------------------------------------------------------
 # Query Grid — role families × location buckets for permissive APIs
@@ -87,18 +98,28 @@ logger = get_logger(__name__)
 
 
 class DiscoveryBot(BaseBot):
-    """Finds new job opportunities and stores them in the discovery database."""
+    """Finds new job opportunities and stores them in the discovery database.
+
+    Two modes:
+    - Incremental (default): fetch only sources due per adaptive schedule, alert on new
+    - Backfill (--backfill): sweep all sources + paginate APIs up to --days history,
+      mark records as is_backfill=1, NO alerts sent (historical data, not actionable)
+    """
 
     def __init__(
         self,
         source_filter: list[str] | None = None,
         dry_run: bool = False,
         parse_only: bool = False,
+        backfill: bool = False,
+        backfill_days: int = 30,
     ) -> None:
         super().__init__("discovery")
         self.source_filter = source_filter
         self.dry_run = dry_run
         self.parse_only = parse_only
+        self.backfill = backfill          # True = historical sweep, no alerts
+        self.backfill_days = backfill_days  # How many days of history to pull
         self._notifier: TelegramNotifier | None = None
         self._preferences: JobPreferences | None = None
         self._parser: JobParser | None = None
@@ -119,7 +140,8 @@ class DiscoveryBot(BaseBot):
         """Discover new jobs and parse them."""
         if self.parse_only:
             return self._run_parse_only()
-
+        if self.backfill:
+            return self._run_backfill()
         return self._run_discovery()
 
     def _run_discovery(self) -> dict:
@@ -257,25 +279,45 @@ class DiscoveryBot(BaseBot):
 
         logger.info(f"Found {len(all_jobs)} total jobs across all sources")
 
-        # Score, filter, dedup (URL + fingerprint + ATS ID), store
+        # Quality filter + normalize + dedup + score + store
+        # url_to_job_id: tracks primary job IDs found this run for source_map wiring
+        url_to_job_id: dict[str, str] = {}
         matched = []
         rejected = 0
+        quality_rejected = 0
         duplicates = 0
         stored = 0
 
         for job in all_jobs:
-            # Dedup pass 1: exact URL match
-            if job["url"] in existing_urls:
-                duplicates += 1
+            # Normalize title and company before any processing
+            job["title"] = normalize_title(job.get("title", ""))
+            job["company"] = normalize_company_name(job.get("company", ""))
+
+            # Quality filter — reject junk before dedup (saves compute)
+            keep, reject_reason = filter_job(job)
+            if not keep:
+                quality_rejected += 1
+                logger.debug(f"Quality reject [{reject_reason}]: {job.get('title', '?')} @ {job.get('company', '?')}")
                 continue
 
-            # Dedup pass 2: ATS job_id match (same job posted across aggregators)
+            # Dedup pass 1: exact URL match — record cross-source appearance
+            if job["url"] in existing_urls:
+                duplicates += 1
+                primary_id = url_to_job_id.get(job["url"], "")
+                if primary_id:
+                    record_source_map(
+                        primary_id, job.get("source_name", ""), job["url"],
+                        match_type="url", similarity=1.0,
+                    )
+                continue
+
+            # Dedup pass 2: ATS job_id match (same job across aggregators)
             ats_id = extract_ats_job_id(job.get("url", ""))
             if ats_id and ats_id in existing_ats_ids:
                 duplicates += 1
                 continue
 
-            # Dedup pass 3: fingerprint match (catches same job from different sources)
+            # Dedup pass 3: fingerprint match (same job from different sources)
             fp = _compute_fingerprint(
                 job.get("title", ""), job.get("company", ""), job.get("location", ""),
             )
@@ -297,6 +339,7 @@ class DiscoveryBot(BaseBot):
 
             if score >= prefs.min_match_score:
                 job["score"] = score
+                job["is_backfill"] = 0  # incremental mode = fresh
                 matched.append(job)
                 existing_urls.add(job["url"])
                 existing_fps.add(fp)
@@ -316,6 +359,8 @@ class DiscoveryBot(BaseBot):
                 job_id = insert_job(job)
                 if job_id:
                     stored += 1
+                    # Track url→id mapping for source_map wiring in subsequent dedup hits
+                    url_to_job_id[job["url"]] = job_id
                     # Immediately parse with keyword parser
                     if self._parser:
                         try:
@@ -351,15 +396,21 @@ class DiscoveryBot(BaseBot):
                 except Exception:
                     pass
 
-        # Telegram notification — only for high-signal new jobs
-        # Filters: first_seen within last 2 hours + score >= priority threshold
+        # Telegram notification — idempotent, only for high-signal new jobs
+        # Guarantees: no duplicates, no backfill spam, only actionable alerts
+        # Logic: job must be (1) first_seen < 2h, (2) is_backfill=0, (3) alerted_at='', (4) score >= threshold
         if not self.dry_run and self._notifier and self._notifier.is_configured():
             from src.discovery.database import get_new_jobs_since
             PRIORITY_SCORE_THRESHOLD = 0.3  # Only notify if score >= 30%
+            # get_new_jobs_since already filters: is_backfill=0 AND alerted_at=''
             new_jobs = get_new_jobs_since(hours=2)
             priority_jobs = [
                 j for j in new_jobs
                 if (j.get("match_score") or 0) >= PRIORITY_SCORE_THRESHOLD
+            ]
+            skipped_low_score = [
+                j for j in new_jobs
+                if (j.get("match_score") or 0) < PRIORITY_SCORE_THRESHOLD
             ]
 
             if priority_jobs:
@@ -369,10 +420,18 @@ class DiscoveryBot(BaseBot):
                 )
                 more = f"\n  ...and {len(priority_jobs) - 8} more" if len(priority_jobs) > 8 else ""
                 self._notifier.send_message(
-                    f"*🎯 {len(priority_jobs)} High-Match Jobs (last 2h)*\n\n{job_lines}{more}\n\n"
+                    f"*High-Match Jobs (last 2h)*\n\n{job_lines}{more}\n\n"
                     f"_Total stored this run: {stored}_"
                 )
-            elif stored > 0:
+                # Mark alerted so we never re-notify these
+                for j in priority_jobs:
+                    mark_alerted(j["id"])
+
+            # Mark low-score jobs as skipped so we don't check them on next run
+            for j in skipped_low_score:
+                mark_alert_skipped(j["id"], "skipped_score")
+
+            if not priority_jobs and stored > 0:
                 # Low-signal summary (all stored, no high-priority matches)
                 self._notifier.send_message(
                     f"*Discovery: {stored} new jobs stored* "
@@ -383,6 +442,27 @@ class DiscoveryBot(BaseBot):
         if stored > 0 and not self.dry_run:
             rebuild_fts_index()
 
+        # Pipeline health check — alert if pipeline has stalled (0 new jobs in 24h)
+        if not self.dry_run and self._notifier and self._notifier.is_configured():
+            try:
+                health = get_pipeline_health()
+                if not health.get("pipeline_healthy", True):
+                    jobs_day = health.get("jobs_per_day", 0)
+                    failing = health.get("sources_failing", 0)
+                    disabled = health.get("sources_disabled", 0)
+                    if jobs_day == 0:
+                        self._notifier.send_message(
+                            f"*Pipeline Alert: 0 new jobs in last 24h*\n\n"
+                            f"Sources failing: {failing} | Disabled: {disabled}\n"
+                            f"Check logs — pipeline may have stalled."
+                        )
+                        logger.warning("Pipeline health: STALLED — 0 jobs ingested in 24h")
+                    elif failing > 0:
+                        logger.warning(f"Pipeline health: {failing} sources failing, "
+                                       f"{disabled} disabled")
+            except Exception as e:
+                logger.debug(f"Pipeline health check error: {e}")
+
         stats = {
             "sources_scanned": len(due_sources),
             "sources_skipped": skipped_sources,
@@ -391,9 +471,154 @@ class DiscoveryBot(BaseBot):
             "stored": stored,
             "duplicates": duplicates,
             "rejected": rejected,
+            "quality_rejected": quality_rejected,
             "errors": source_errors,
         }
         logger.info(f"Discovery complete: {stats}")
+        return stats
+
+    def _run_backfill(self) -> dict:
+        """Historical sweep: fetch ALL sources ignoring adaptive scheduling.
+
+        Marks all records as is_backfill=1 — no Telegram alerts sent.
+        For paginated API sources (Muse, Adzuna), uses fetch_paginated()
+        with extended max_pages to pull more history.
+        For ATS company feeds (Greenhouse/Lever/Ashby), fetches normally
+        (they already return all currently-open roles).
+        """
+        logger.info(
+            f"Backfill mode: sweeping ALL sources (history ~{self.backfill_days} days), "
+            f"no alerts will be sent"
+        )
+
+        # Load existing dedup sets
+        existing_urls = get_all_urls()
+        existing_fps = get_all_fingerprints()
+        existing_ats_ids = get_all_ats_ids()
+        logger.info(
+            f"Dedup baseline: {len(existing_urls)} URLs, "
+            f"{len(existing_fps)} fingerprints, {len(existing_ats_ids)} ATS IDs"
+        )
+
+        prefs = self._preferences or JobPreferences.from_config()
+        sources = get_enabled_sources(self.source_filter)
+
+        all_jobs: list[dict] = []
+        source_errors = 0
+
+        # For paginated sources, fetch more pages to reach the history window
+        # Rule of thumb: 1 page ≈ 100 jobs ≈ 1-2 days of postings
+        backfill_pages = max(5, self.backfill_days // 3)
+
+        for source in sources:
+            try:
+                # Backfill: ignore adaptive scheduling, always fetch
+                if source.parser in PAGINATED_PARSERS:
+                    jobs = fetch_paginated(source, max_pages=backfill_pages)
+                    logger.info(f"Backfill [{source.name}]: fetched {len(jobs)} jobs "
+                                f"({backfill_pages} pages)")
+                else:
+                    cache = get_source_cache(source.name)
+                    query = (prefs.keywords[0] if prefs.keywords else "software engineer")
+                    location = (prefs.locations[0] if prefs.locations else "")
+                    jobs = fetch_source(
+                        source, query=query, location=location,
+                        etag=cache.get("etag", ""), modified=cache.get("last_modified", ""),
+                    )
+
+                # Mark all as backfill
+                for job in jobs:
+                    job["is_backfill"] = 1
+
+                all_jobs.extend(jobs)
+                update_source_stats(
+                    source.name, source.source_type.value, source.url_template,
+                    job_count=len(jobs),
+                )
+            except Exception as e:
+                logger.error(f"Backfill source {source.name} failed: {e}")
+                source_errors += 1
+
+        logger.info(f"Backfill: fetched {len(all_jobs)} raw jobs from {len(sources)} sources")
+
+        # Quality filter + dedup + store (no scoring threshold — accept everything for backfill)
+        quality_rejected = 0
+        duplicates = 0
+        stored = 0
+
+        for job in all_jobs:
+            job["title"] = normalize_title(job.get("title", ""))
+            job["company"] = normalize_company_name(job.get("company", ""))
+            job["is_backfill"] = 1  # Ensure flag is set
+
+            keep, reject_reason = filter_job(job)
+            if not keep:
+                quality_rejected += 1
+                continue
+
+            # Dedup pass 1: URL
+            if job["url"] in existing_urls:
+                duplicates += 1
+                continue
+
+            # Dedup pass 2: ATS job_id
+            ats_id = extract_ats_job_id(job.get("url", ""))
+            if ats_id and ats_id in existing_ats_ids:
+                duplicates += 1
+                continue
+
+            # Dedup pass 3: fingerprint
+            fp = _compute_fingerprint(
+                job.get("title", ""), job.get("company", ""), job.get("location", ""),
+            )
+            if fp in existing_fps:
+                duplicates += 1
+                continue
+
+            # No score threshold for backfill — accept all quality-passing jobs
+            job["score"] = score_job(
+                title=job["title"],
+                description=job.get("description", ""),
+                company=job.get("company", ""),
+                location=job.get("location", ""),
+                preferences=prefs,
+            )
+
+            if not self.dry_run:
+                job_id = insert_job(job)
+                if job_id:
+                    stored += 1
+                    if self._parser:
+                        try:
+                            fields = self._parser.parse(job)
+                            update_parsed_fields(job_id, fields)
+                        except Exception:
+                            pass
+                    # Immediately mark alert_status so backfill never triggers alerts
+                    mark_alert_skipped(job_id, "skipped_backfill")
+            else:
+                stored += 1
+
+            existing_urls.add(job["url"])
+            existing_fps.add(fp)
+            if ats_id:
+                existing_ats_ids.add(ats_id)
+
+        if stored > 0 and not self.dry_run:
+            rebuild_fts_index()
+
+        stats = {
+            "mode": "backfill",
+            "days": self.backfill_days,
+            "sources_swept": len(sources),
+            "total_found": len(all_jobs),
+            "stored": stored,
+            "duplicates": duplicates,
+            "quality_rejected": quality_rejected,
+            "errors": source_errors,
+        }
+        logger.info(f"Backfill complete: {stats}")
+        print(f"\n  Backfill done — stored {stored} historical jobs ({duplicates} already in DB)")
         return stats
 
     def _run_parse_only(self) -> dict:
@@ -431,6 +656,10 @@ def main() -> None:
                         help="Only parse unparsed jobs (no fetching)")
     parser.add_argument("--stats", action="store_true",
                         help="Show database statistics and exit")
+    parser.add_argument("--backfill", action="store_true",
+                        help="Historical sweep: fetch ALL sources, mark as is_backfill=1, no alerts")
+    parser.add_argument("--days", type=int, default=30,
+                        help="Days of history to pull in backfill mode (default: 30)")
 
     args = parser.parse_args()
 
@@ -458,9 +687,22 @@ def main() -> None:
         return
 
     source_filter = [s.strip() for s in args.sources.split(",") if s.strip()] if args.sources else None
-    bot = DiscoveryBot(source_filter=source_filter, dry_run=args.dry_run, parse_only=args.parse_only)
+    bot = DiscoveryBot(
+        source_filter=source_filter,
+        dry_run=args.dry_run,
+        parse_only=args.parse_only,
+        backfill=args.backfill,
+        backfill_days=args.days,
+    )
 
-    mode = "PARSE ONLY" if args.parse_only else ("DRY RUN" if args.dry_run else "LIVE")
+    if args.backfill:
+        mode = f"BACKFILL ({args.days} days, no alerts)"
+    elif args.parse_only:
+        mode = "PARSE ONLY"
+    elif args.dry_run:
+        mode = "DRY RUN"
+    else:
+        mode = "LIVE"
     print(f"\n  Discovery Bot ({mode})")
     print("  " + "=" * 50)
 

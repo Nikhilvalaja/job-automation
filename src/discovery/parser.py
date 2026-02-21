@@ -92,12 +92,14 @@ class JobParser:
             description=job.get("description", "")[:3000],
         )
 
-        result = self._llm.chat(
+        result = self._llm.chat_safe(
             system_prompt=PARSE_SYSTEM,
             user_prompt=user_prompt,
-            temperature=0.1,  # Low creativity for extraction
+            temperature=0.1,
             max_tokens=500,
         )
+        if result is None:
+            raise RuntimeError("LLM unavailable — quota exceeded or not configured")
 
         # Parse JSON from response
         text = result["text"].strip()
