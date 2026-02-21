@@ -37,9 +37,11 @@ Add these secrets one by one:
 | `TELEGRAM_CHAT_ID` | `8248608168` |
 | `GOOGLE_SHEET_ID` | `1yW6D92PdO4TyBO6vHfs5Qu8tTul998fP6UXa3UxU0vY` |
 | `OPENAI_API_KEY` | (your OpenAI key — optional for cover letters) |
-| `DISCOVERY_KEYWORDS` | `software engineer,backend developer,ML engineer,python developer,data engineer` |
-| `DISCOVERY_LOCATIONS` | `remote,new york` |
-| `DISCOVERY_EXCLUDED_KEYWORDS` | `senior staff,principal,director,intern,lead` |
+| `DISCOVERY_KEYWORDS` | `software engineer,software developer,backend developer,frontend developer,full stack developer,junior developer,data engineer,data scientist,data analyst,ML engineer,machine learning engineer,python developer,business analyst,financial analyst,cloud engineer,devops engineer,epic analyst,analytics engineer,platform engineer` |
+| `DISCOVERY_LOCATIONS` | `remote,new york,san francisco,seattle,austin,chicago,boston,atlanta,los angeles,denver,dallas,washington dc,miami,philadelphia,portland,minneapolis,houston,san diego,raleigh,phoenix,united states` |
+| `DISCOVERY_EXCLUDED_KEYWORDS` | `senior staff,principal,director,vp,vice president,intern,c-level` |
+| `ADZUNA_APP_ID` | `234c7209` |
+| `ADZUNA_API_KEY` | `acf278cb73feb0113ead83faa2281f0b` |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | (see below) |
 
 ### For GOOGLE_SERVICE_ACCOUNT_JSON:
