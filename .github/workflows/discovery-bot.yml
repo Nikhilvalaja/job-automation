@@ -39,12 +39,11 @@ jobs:
             job-database-
 
       - name: Create data directory
-        run: mkdir -p data logs
+        run: mkdir -p data logs credentials
 
       - name: Write credentials from secrets
         run: |
           echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > credentials/decent-booster-484319-i2-3eefecefe5e7.json
-          mkdir -p credentials
 
       - name: Write .env from secrets
         run: |
