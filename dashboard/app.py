@@ -675,15 +675,17 @@ def render_sites(df: pd.DataFrame):
 
 # --- System Health ---
 def render_health(backend_url: str):
-    """System health tab — service status, pipeline stats, live logs."""
+    """System health tab — service status, pipeline stats, bot last-run, logs, extension guide."""
     st.subheader("System Health")
-    st.caption("Real-time status of all JobPilot services, discovery pipeline, and recent logs.")
+    st.caption("Real-time status of all JobPilot services, bots, discovery pipeline, and logs.")
+
+    if st.button("Refresh", key="health_refresh"):
+        st.rerun()
 
     # ── Service status ────────────────────────────────────────────────
     st.markdown("#### Services")
     col_b, col_d, col_h = st.columns(3)
 
-    # Backend
     try:
         r = httpx.get(f"{backend_url}/health", timeout=3.0)
         ok = r.status_code == 200
@@ -691,34 +693,85 @@ def render_health(backend_url: str):
         ok = False
     col_b.metric("Backend API", "Running ✅" if ok else "Down ❌", "port 8000")
 
-    # Dashboard (self — if we're rendering this, it's up)
     col_d.metric("Dashboard", "Running ✅", "port 8501")
 
-    # Check /ready (Sheets connectivity)
     try:
         r2 = httpx.get(f"{backend_url}/ready", timeout=5.0)
         sheets_ok = r2.status_code == 200
     except Exception:
         sheets_ok = False
-    col_h.metric("Google Sheets", "Connected ✅" if sheets_ok else "Disconnected ⚠️", "via service account")
+    col_h.metric("Google Sheets", "Connected ✅" if sheets_ok else "Disconnected ⚠️", "service account")
 
     st.divider()
 
-    # ── Discovery pipeline stats ──────────────────────────────────────
+    # ── Pipeline health metrics ───────────────────────────────────────
     st.markdown("#### Discovery Pipeline")
+    ph = {}
     try:
-        r3 = httpx.get(f"{backend_url}/discovery/stats", timeout=5.0)
-        if r3.status_code == 200:
-            s = r3.json()
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Discovered", f"{s.get('total', 0):,}")
-            c2.metric("Jobs/Day (7d avg)", f"{s.get('jobs_per_day', 0):.0f}")
-            c3.metric("Sources Active", str(s.get("sources_active", "—")))
-            c4.metric("Sources Failing", str(s.get("sources_failing", 0)))
+        rph = httpx.get(f"{backend_url}/discovery/pipeline-health", timeout=6.0)
+        if rph.status_code == 200:
+            ph = rph.json()
+    except Exception:
+        pass
+
+    if ph:
+        healthy = ph.get("pipeline_healthy", False)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Jobs / Day", f"{ph.get('jobs_per_day', 0):.0f}")
+        c2.metric("Jobs / Hour", f"{ph.get('jobs_per_hour', 0):.0f}")
+        c3.metric("Sources Active", str(ph.get("sources_total", "—")))
+        c4.metric("Sources Failing", str(ph.get("sources_failing", 0)))
+        c5.metric("Alerts Today", str(ph.get("alerted_today", 0)))
+        if healthy:
+            st.success("Pipeline healthy — jobs are flowing in.")
         else:
-            st.warning("Could not load discovery stats.")
+            st.error("Pipeline issue detected — check logs below.")
+    else:
+        st.info("Pipeline stats unavailable (backend may be starting up).")
+
+    st.divider()
+
+    # ── Per-bot last run table ────────────────────────────────────────
+    st.markdown("#### Bot Status — Last Run")
+    try:
+        rs = httpx.get(f"{backend_url}/discovery/sources", timeout=6.0)
+        if rs.status_code == 200:
+            sources = rs.json().get("sources", [])
+            if sources:
+                # Show only sources that have run at least once, sorted by last fetch
+                ran = [s for s in sources if s.get("last_fetched_at")]
+                ran_sorted = sorted(ran, key=lambda s: s["last_fetched_at"], reverse=True)
+
+                # Summarize by type (too many individual sources to show all)
+                type_summary: dict[str, dict] = {}
+                for s in sources:
+                    t = s.get("source_type", "other")
+                    g = type_summary.setdefault(t, {"runs": 0, "errors": 0, "jobs": 0, "last_run": ""})
+                    g["runs"] += 1
+                    g["errors"] += s.get("consecutive_errors", 0)
+                    g["jobs"] += s.get("total_jobs_found", 0)
+                    if s.get("last_fetched_at") and s["last_fetched_at"] > g["last_run"]:
+                        g["last_run"] = s["last_fetched_at"]
+
+                summary_rows = [
+                    {"Source Type": t, "Sources": v["runs"], "Total Jobs Found": v["jobs"],
+                     "Errors": v["errors"], "Last Run": v["last_run"][:16] if v["last_run"] else "Never"}
+                    for t, v in sorted(type_summary.items())
+                ]
+                st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+                # Top recently failing sources
+                failing = [s for s in sources if s.get("consecutive_errors", 0) >= 2]
+                if failing:
+                    st.warning(f"{len(failing)} sources have consecutive errors:")
+                    fail_rows = [{"Source": s["source_name"], "Consecutive Errors": s["consecutive_errors"],
+                                  "Last Fetched": (s.get("last_fetched_at") or "Never")[:16]}
+                                 for s in sorted(failing, key=lambda x: x["consecutive_errors"], reverse=True)[:10]]
+                    st.dataframe(pd.DataFrame(fail_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No source stats yet — run the discovery bot first.")
     except Exception as e:
-        st.warning(f"Discovery stats unavailable: {e}")
+        st.info(f"Source stats unavailable: {e}")
 
     st.divider()
 
@@ -732,8 +785,58 @@ def render_health(backend_url: str):
     mobile_url = f"http://{hostname}:8000/capture"
     st.info(
         f"**On your phone (same WiFi):** open [{mobile_url}]({mobile_url})  \n"
-        f"Paste any job URL → saved to JobPilot instantly."
+        f"Paste any job URL → saved to JobPilot instantly. No app install needed."
     )
+
+    st.divider()
+
+    # ── Chrome Extension install guide ────────────────────────────────
+    with st.expander("Chrome Extension — Install Guide & Permissions", expanded=False):
+        st.markdown("""
+**Step-by-step install (one-time setup):**
+
+1. Open Chrome and go to: `chrome://extensions/`
+2. Toggle **Developer mode** ON (top-right corner)
+3. Click **Load unpacked**
+4. Select the folder: `<repo>/extension/`
+   *(e.g. `C:\\Users\\valaj\\OneDrive\\Desktop\\job-automation\\extension`)*
+5. Extension appears as **"Job Tracker Pro v2.0.0"**
+6. Click the puzzle icon → pin "Job Tracker Pro" to toolbar
+7. In the extension's **Settings** tab, verify Backend URL = `http://localhost:8000`
+
+---
+
+**What it does on job pages (auto-detection):**
+- Reads job title, company, location, salary, skills from the page
+- Shows a small overlay/badge when a job is detected
+- Click the extension icon → **Add Job** tab → details are pre-filled
+- Or press **Ctrl+Shift+J** to quick-track any page
+
+**Supported sites (runs automatically):**
+
+| Site | Coverage |
+|---|---|
+| LinkedIn | Job postings + Easy Apply |
+| Indeed | Job detail pages |
+| Glassdoor | Job listings |
+| Lever.co | All company career pages on Lever |
+| Greenhouse.io | All companies on Greenhouse |
+| Workday | All companies on Workday |
+| ZipRecruiter | Job listings |
+| Dice | Tech job detail pages |
+| Monster | Job listings |
+| Wellfound / Angel.co | Startup jobs |
+| BuiltIn | City tech job listings |
+| SimplyHired | Job listings |
+| CareerBuilder | Job listings |
+
+**Fallback — site not supported?**
+- Click the extension icon on any page
+- Use the **"Send Current URL"** button in the Add Job tab
+- Or go to the **Mobile Capture** form above (works from any device on same WiFi)
+
+**Keyboard shortcut:** `Ctrl+Shift+J` — quick-tracks the current page immediately.
+        """)
 
     st.divider()
 
@@ -759,9 +862,6 @@ def render_health(backend_url: str):
                 st.code(tail, language="")
             except Exception as e:
                 st.error(f"Could not read log: {e}")
-
-    if st.button("Refresh", key="health_refresh"):
-        st.rerun()
 
 
 # --- Cover Letter Generator ---

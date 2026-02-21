@@ -19,6 +19,7 @@ from src.discovery.database import (
     get_companies,
     get_job_by_id,
     get_new_jobs_since,
+    get_pipeline_health,
     get_source_stats,
     get_stale_jobs,
     get_stats,
@@ -110,6 +111,15 @@ async def discovery_stats() -> DiscoveryStatsResponse:
     """Get discovery database statistics."""
     stats = get_stats()
     return DiscoveryStatsResponse(**stats)
+
+
+@router.get("/pipeline-health")
+async def pipeline_health():
+    """Get real-time pipeline health: jobs/day, sources failing, alerts sent today."""
+    try:
+        return get_pipeline_health()
+    except Exception as exc:
+        return {"error": str(exc), "pipeline_healthy": False}
 
 
 @router.get("/sources")
