@@ -428,8 +428,9 @@ class TestDiscoveryBot:
              "location": "Remote", "source_name": "Test"},
         ]
 
-        bot = DiscoveryBot(dry_run=False)
+        bot = DiscoveryBot(dry_run=False, source_filter=["Test"])
         bot.start()
+        bot._notifier = None  # prevent Telegram network calls in tests
         bot._preferences = JobPreferences(keywords=["software engineer"], locations=["remote"])
 
         stats = bot.run_once()
@@ -463,7 +464,7 @@ class TestDiscoveryBot:
              "description": _desc, "location": "", "source_name": "Test"},
         ]
 
-        bot = DiscoveryBot(dry_run=True)
+        bot = DiscoveryBot(dry_run=True, source_filter=["Test"])
         bot.start()
         bot._preferences = JobPreferences(keywords=["software engineer"])
 
@@ -496,7 +497,7 @@ class TestDiscoveryBot:
              "location": "", "source_name": "Test"},
         ]
 
-        bot = DiscoveryBot(dry_run=True)
+        bot = DiscoveryBot(dry_run=True, source_filter=["Test"])
         bot.start()
         bot._preferences = JobPreferences(
             keywords=["software engineer"],
