@@ -419,24 +419,42 @@ class DiscoveryBot(BaseBot):
             from src.discovery.database import get_new_jobs_since
             _s = get_settings()
             PRIORITY_SCORE_THRESHOLD = _s.priority_score_threshold  # configurable via .env
+            URGENT_OVERRIDE_THRESHOLD = 0.9  # Always alert regardless of quiet hours
             # Quiet hours check — skip alerts between quiet_start and quiet_end
             _hour = datetime.now().hour
             _qs, _qe = _s.alert_quiet_hours_start, _s.alert_quiet_hours_end
             _in_quiet = (_qs <= _qe and _qs <= _hour < _qe) or \
                         (_qs > _qe and (_hour >= _qs or _hour < _qe))
-            if _in_quiet:
+
+            # get_new_jobs_since already filters: is_backfill=0 AND alerted_at=''
+            new_jobs = get_new_jobs_since(hours=2)
+            priority_jobs = [
+                j for j in new_jobs
+                if (j.get("match_score") or 0) >= PRIORITY_SCORE_THRESHOLD
+            ]
+            skipped_low_score = [
+                j for j in new_jobs
+                if (j.get("match_score") or 0) < PRIORITY_SCORE_THRESHOLD
+            ]
+            # Urgent jobs always alert — bypass quiet hours (score >= 90%)
+            urgent_jobs = [j for j in priority_jobs
+                           if (j.get("match_score") or 0) >= URGENT_OVERRIDE_THRESHOLD]
+            if _in_quiet and urgent_jobs:
+                job_lines = "\n".join(
+                    f"  [{j.get('match_score', 0):.0%}] {j['title']} @ {j.get('company', '?')}"
+                    for j in urgent_jobs[:5]
+                )
+                self._notifier.send_message(
+                    f"*URGENT Match (quiet hours override)*\n\n{job_lines}\n\n"
+                    f"_Score >= 90% — alerting despite quiet hours_"
+                )
+                for j in urgent_jobs:
+                    mark_alerted(j["id"])
+                # Remove already-alerted from priority list
+                alerted_ids = {j["id"] for j in urgent_jobs}
+                priority_jobs = [j for j in priority_jobs if j["id"] not in alerted_ids]
+            elif _in_quiet:
                 logger.info(f"Quiet hours ({_qs:02d}:00–{_qe:02d}:00) — skipping Telegram alerts")
-            else:
-                # get_new_jobs_since already filters: is_backfill=0 AND alerted_at=''
-                new_jobs = get_new_jobs_since(hours=2)
-                priority_jobs = [
-                    j for j in new_jobs
-                    if (j.get("match_score") or 0) >= PRIORITY_SCORE_THRESHOLD
-                ]
-                skipped_low_score = [
-                    j for j in new_jobs
-                    if (j.get("match_score") or 0) < PRIORITY_SCORE_THRESHOLD
-                ]
 
             if not _in_quiet:
                 if priority_jobs:

@@ -731,18 +731,43 @@ def render_health(backend_url: str):
 
     st.divider()
 
-    # ── Per-bot last run table ────────────────────────────────────────
+    # ── Per-bot last run (heartbeat) ──────────────────────────────────
     st.markdown("#### Bot Status — Last Run")
+    try:
+        rb = httpx.get(f"{backend_url}/bot-status", timeout=4.0)
+        if rb.status_code == 200:
+            bots = rb.json().get("bots", {})
+            if bots:
+                _bot_names = {
+                    "discovery": "Discovery Bot",
+                    "email": "Email Bot (reply tracker)",
+                    "gmail_ingest": "Gmail Ingest Bot",
+                    "reminder": "Reminder Bot",
+                }
+                bot_rows = [
+                    {
+                        "Bot": _bot_names.get(k, k.title()),
+                        "Last Run (UTC)": (info.get("last_run") or "Never")[:19].replace("T", " "),
+                        "Status": "✅ OK" if info.get("status") == "ok" else "❌ Error",
+                        "Last Error": (info.get("last_error") or "—")[:80],
+                    }
+                    for k, info in sorted(bots.items())
+                ]
+                st.dataframe(pd.DataFrame(bot_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("No bot runs recorded yet — bots will appear here after first run.")
+    except Exception as e:
+        st.info(f"Bot status unavailable: {e}")
+
+    st.divider()
+
+    # ── Discovery sources by type ─────────────────────────────────────
+    st.markdown("#### Discovery Sources — By Type")
     try:
         rs = httpx.get(f"{backend_url}/discovery/sources", timeout=6.0)
         if rs.status_code == 200:
             sources = rs.json().get("sources", [])
             if sources:
-                # Show only sources that have run at least once, sorted by last fetch
-                ran = [s for s in sources if s.get("last_fetched_at")]
-                ran_sorted = sorted(ran, key=lambda s: s["last_fetched_at"], reverse=True)
-
-                # Summarize by type (too many individual sources to show all)
                 type_summary: dict[str, dict] = {}
                 for s in sources:
                     t = s.get("source_type", "other")
@@ -760,7 +785,6 @@ def render_health(backend_url: str):
                 ]
                 st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
-                # Top recently failing sources
                 failing = [s for s in sources if s.get("consecutive_errors", 0) >= 2]
                 if failing:
                     st.warning(f"{len(failing)} sources have consecutive errors:")

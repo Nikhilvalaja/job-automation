@@ -11,7 +11,7 @@ Usage:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Form
+from fastapi import APIRouter, Form, Query
 from fastapi.responses import HTMLResponse
 
 from src.discovery.database import init_db, insert_job, get_all_urls
@@ -95,9 +95,12 @@ def _render(msg: str = "", url: str = "", company: str = "", title: str = "", no
 
 
 @router.get("", response_class=HTMLResponse)
-async def capture_form() -> str:
-    """Serve the mobile-friendly job capture form."""
-    return _render()
+async def capture_form(url: str = Query("", description="Pre-fill URL from Share shortcut")) -> str:
+    """Serve the mobile-friendly job capture form.
+
+    Supports ?url=<job_url> so phone Share Sheet can open /capture?url=... directly.
+    """
+    return _render(url=url)
 
 
 @router.post("", response_class=HTMLResponse)
