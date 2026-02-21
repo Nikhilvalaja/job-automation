@@ -483,6 +483,10 @@ def render_table(df: pd.DataFrame, backend_url: str):
 def render_bot_controls():
     """Render bot control panel with status and actions."""
     st.subheader("Bot Control Center")
+    st.caption(
+        "All bots run automatically via the Orchestrator. "
+        "Double-click **start.bat** in the project folder to launch everything at once."
+    )
 
     settings = get_settings()
 
@@ -503,10 +507,17 @@ def render_bot_controls():
         },
         {
             "name": "Discovery Bot",
-            "desc": f"Scans 260+ job sources (RSS feeds, APIs, career pages) every {settings.discovery_bot_interval_minutes} min",
-            "schedule": f"Every {settings.discovery_bot_interval_minutes} minutes",
+            "desc": f"Scans 700+ job sources (Greenhouse, Lever, Ashby, Workday, Adzuna grid, RSS) every {settings.discovery_bot_interval_minutes} min. Auto-scheduled by Orchestrator.",
+            "schedule": f"Every {settings.discovery_bot_interval_minutes} minutes (auto)",
             "command": "python -m bots.discovery_bot.run",
             "dry_run": "python -m bots.discovery_bot.run --dry-run",
+        },
+        {
+            "name": "Gmail Ingest Bot",
+            "desc": "Scans Gmail (both accounts) every 30 min for job alert emails from iHire, Lensa, LinkedIn, Indeed, jobs2web, and ANY sender with job-related subject lines. Stores sender, URL, posted date, and source website. Auto-scheduled by Orchestrator.",
+            "schedule": "Every 30 min (auto via Orchestrator)",
+            "command": "python -m bots.gmail_ingest_bot.run --hours 168",
+            "dry_run": "python -m bots.gmail_ingest_bot.run --hours 168 --dry-run",
         },
         {
             "name": "Tracker Bot",
@@ -516,9 +527,9 @@ def render_bot_controls():
             "dry_run": "python -m bots.tracker_bot.run list",
         },
         {
-            "name": "Orchestrator",
-            "desc": "Central scheduler that runs all bots automatically",
-            "schedule": "Continuous",
+            "name": "Orchestrator (Keep Running)",
+            "desc": "Central scheduler — runs ALL bots automatically in the background. Start once, leave running. Includes: Email Bot, Reminder Bot, Discovery Bot, Gmail Ingest Bot.",
+            "schedule": "Continuous background process",
             "command": "python -m bots.orchestrator.run",
             "dry_run": "python -m bots.orchestrator.run --status",
         },
@@ -532,6 +543,25 @@ def render_bot_controls():
                 st.code(bot["command"], language="bash")
             with col2:
                 st.code(bot["dry_run"], language="bash")
+
+    # ── Launch Everything Box ────────────────────────────────────────────────
+    st.divider()
+    st.success(
+        "### One-Click Start — Double-click this file:\n\n"
+        "```\nC:\\Users\\valaj\\OneDrive\\Desktop\\job-automation\\start.bat\n```\n\n"
+        "Starts **Backend API + Dashboard + All Bots** automatically.\n"
+        "Bookmark **http://localhost:8501** in your browser — that's your permanent dashboard URL.\n\n"
+        "**What the bots do automatically (no action needed):**\n"
+        "| Bot | Schedule | What it does |\n"
+        "|-----|----------|--------------|\n"
+        "| Discovery Bot | Every 60 min | Scans 700+ sources, scores jobs, Telegram alert on new matches |\n"
+        "| Gmail Ingest | Every 30 min | Captures job alert emails from iHire, Lensa, LinkedIn, etc. |\n"
+        "| Email Bot | Every 5 min | Detects replies, interviews, rejections from applications |\n"
+        "| Reminder Bot | Daily 9 AM | Flags stale applications, sends Telegram follow-up nudges |\n\n"
+        "**Event-triggered (on your action):**\n"
+        "- Google Sheets sync → happens when you click **Apply** on a job\n"
+        "- Telegram job alert → fires when Discovery Bot finds high-score matches"
+    )
 
 
 # --- Email Classification Rules ---

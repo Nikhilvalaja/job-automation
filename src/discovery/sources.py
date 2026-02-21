@@ -36,6 +36,7 @@ class JobSource:
     rate_limit_seconds: float = 2.0
     parser: str = "default"
     headers: dict = field(default_factory=dict)
+    meta: dict = field(default_factory=dict)  # POST payload, auth, extra config
 
 
 def _gh(name: str, slug: str) -> JobSource:
@@ -156,22 +157,77 @@ JOB_BOARD_SOURCES = [
     JobSource(name="The Muse (Analytics)", source_type=SourceType.API,
               url_template="https://www.themuse.com/api/public/jobs?level=Mid%20Level&level=Entry%20Level&level=Senior%20Level&category=Analytics&page=0&descending=true",
               parser="muse", rate_limit_seconds=2.0),
-    # Adzuna API — 5 role-specific searches (50 results per page, sorted by date)
-    JobSource(name="Adzuna (Software Engineer)", source_type=SourceType.API,
-              url_template="https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b&results_per_page=50&what=software+engineer&sort_by=date&content-type=application/json",
-              parser="adzuna", rate_limit_seconds=2.0),
-    JobSource(name="Adzuna (Data Engineer)", source_type=SourceType.API,
-              url_template="https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b&results_per_page=50&what=data+engineer&sort_by=date&content-type=application/json",
-              parser="adzuna", rate_limit_seconds=2.0),
-    JobSource(name="Adzuna (ML Engineer)", source_type=SourceType.API,
-              url_template="https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b&results_per_page=50&what=machine+learning+engineer&sort_by=date&content-type=application/json",
-              parser="adzuna", rate_limit_seconds=2.0),
-    JobSource(name="Adzuna (Python Developer)", source_type=SourceType.API,
-              url_template="https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b&results_per_page=50&what=python+developer&sort_by=date&content-type=application/json",
-              parser="adzuna", rate_limit_seconds=2.0),
-    JobSource(name="Adzuna (Backend Engineer)", source_type=SourceType.API,
-              url_template="https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b&results_per_page=50&what=backend+engineer&sort_by=date&content-type=application/json",
-              parser="adzuna", rate_limit_seconds=2.0),
+    # Indeed RSS — job alert feeds (sorted by date)
+    JobSource(name="Indeed (Software Engineer)", source_type=SourceType.RSS,
+              url_template="https://www.indeed.com/rss?q=software+engineer&sort=date&limit=50",
+              rate_limit_seconds=3.0),
+    JobSource(name="Indeed (Data Engineer)", source_type=SourceType.RSS,
+              url_template="https://www.indeed.com/rss?q=data+engineer&sort=date&limit=50",
+              rate_limit_seconds=3.0),
+    JobSource(name="Indeed (ML Engineer)", source_type=SourceType.RSS,
+              url_template="https://www.indeed.com/rss?q=machine+learning+engineer&sort=date&limit=50",
+              rate_limit_seconds=3.0),
+    JobSource(name="Indeed (Python Developer)", source_type=SourceType.RSS,
+              url_template="https://www.indeed.com/rss?q=python+developer&sort=date&limit=50",
+              rate_limit_seconds=3.0),
+    JobSource(name="Indeed (Backend Engineer)", source_type=SourceType.RSS,
+              url_template="https://www.indeed.com/rss?q=backend+engineer&sort=date&limit=50",
+              rate_limit_seconds=3.0),
+    JobSource(name="Indeed (Data Scientist)", source_type=SourceType.RSS,
+              url_template="https://www.indeed.com/rss?q=data+scientist&sort=date&limit=50",
+              rate_limit_seconds=3.0),
+    JobSource(name="Indeed (Remote Software)", source_type=SourceType.RSS,
+              url_template="https://www.indeed.com/rss?q=software+engineer&l=remote&sort=date&limit=50",
+              rate_limit_seconds=3.0),
+]
+
+
+# ---------------------------------------------------------------------------
+# Adzuna Query Grid — role × location matrix (50 results/page, sorted by date)
+# Each cell = its own source with independent schedule + cursor
+# ---------------------------------------------------------------------------
+
+_ADZUNA_APP = "app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b"
+
+ADZUNA_ROLES = [
+    ("Software Engineer", "software+engineer"),
+    ("Backend Engineer", "backend+engineer"),
+    ("Data Engineer", "data+engineer"),
+    ("ML Engineer", "machine+learning+engineer"),
+    ("Python Developer", "python+developer"),
+    ("Data Scientist", "data+scientist"),
+    ("Full Stack Developer", "full+stack+developer"),
+    ("Platform Engineer", "platform+engineer"),
+]
+
+ADZUNA_LOCATIONS = [
+    ("", ""),              # Nationwide — no location filter
+    ("NY", "new+york"),
+    ("SF", "san+francisco"),
+    ("Seattle", "seattle"),
+    ("Chicago", "chicago"),
+    ("Austin", "austin"),
+]
+
+
+def _adzuna(role_label: str, role_query: str, loc_label: str = "", loc_query: str = "") -> JobSource:
+    """Generate a single Adzuna API source for one role+location cell."""
+    base = (
+        f"https://api.adzuna.com/v1/api/jobs/us/search/1?"
+        f"{_ADZUNA_APP}&results_per_page=50&what={role_query}&sort_by=date"
+        f"&content-type=application/json"
+    )
+    if loc_query:
+        base += f"&where={loc_query}"
+    name = f"Adzuna ({role_label}{' - ' + loc_label if loc_label else ''})"
+    return JobSource(name=name, source_type=SourceType.API,
+                     url_template=base, parser="adzuna", rate_limit_seconds=2.0)
+
+
+ADZUNA_SOURCES = [
+    _adzuna(role_label, role_query, loc_label, loc_query)
+    for role_label, role_query in ADZUNA_ROLES
+    for loc_label, loc_query in ADZUNA_LOCATIONS
 ]
 
 # ---------------------------------------------------------------------------
@@ -1002,8 +1058,71 @@ SMARTRECRUITERS_FEEDS = [
 # All sources combined
 # ---------------------------------------------------------------------------
 
-COMPANY_CAREER_FEEDS = BIG_TECH_FEEDS + GREENHOUSE_FEEDS + LEVER_FEEDS + ASHBY_FEEDS + SMARTRECRUITERS_FEEDS
-ALL_SOURCES = JOB_BOARD_SOURCES + COMPANY_CAREER_FEEDS
+# ---------------------------------------------------------------------------
+# Workday — enterprise ATS used by 10,000+ companies
+# REST API: POST /wday/cxs/{tenant}/{site}/jobs  → {jobPostings: [...]}
+# ---------------------------------------------------------------------------
+
+def _workday(name: str, tenant: str, site: str, wd_num: int = 5) -> JobSource:
+    """Workday REST API source. Uses POST with JSON body."""
+    url = f"https://{tenant}.wd{wd_num}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
+    return JobSource(
+        name=f"Workday: {name}",
+        source_type=SourceType.API,
+        url_template=url,
+        parser="workday",
+        rate_limit_seconds=2.0,
+        meta={
+            "method": "POST",
+            "payload": {"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": ""},
+            "base_domain": f"https://{tenant}.wd{wd_num}.myworkdayjobs.com",
+        },
+    )
+
+
+WORKDAY_FEEDS = [
+    # Big Tech / FAANG adjacent
+    _workday("NVIDIA", "nvidia", "NVIDIAExternalCareerSite"),
+    _workday("Intel", "intel", "External", wd_num=1),
+    _workday("Qualcomm", "qualcomm", "External"),
+    _workday("Cisco", "cisco", "Cisco"),
+    _workday("Dell", "dell", "External", wd_num=1),
+    _workday("HP", "hp", "HPCareer"),
+    _workday("IBM", "ibm", "IBMExternalSite", wd_num=3),
+    _workday("Oracle", "oracle", "External", wd_num=1),
+    _workday("SAP", "sap", "SAP", wd_num=3),
+    _workday("Salesforce", "salesforce", "External", wd_num=12),
+    _workday("Adobe", "adobe", "external_experienced"),
+    _workday("PayPal", "paypal", "jobs", wd_num=1),
+    _workday("eBay", "ebay", "apply"),
+    _workday("VMware", "vmware", "VMware"),
+    _workday("Palo Alto Networks", "paloaltonetworks", "External"),
+    _workday("Splunk", "splunk", "splunk_careers"),
+    _workday("ServiceNow", "servicenow", "External"),
+    _workday("Workday", "workday", "Workday", wd_num=3),
+    # Finance / Consulting
+    _workday("JPMorgan Chase", "jpmc", "JPMorganChase", wd_num=1),
+    _workday("Goldman Sachs", "gs", "GoldmanSachs", wd_num=1),
+    _workday("Morgan Stanley", "morganstanley", "ms_external_career_site", wd_num=3),
+    _workday("Bank of America", "bofa", "Global", wd_num=1),
+    _workday("Wells Fargo", "wellsfargo", "Wells_Fargo_Careers"),
+    _workday("Citi", "citi", "2"),
+    _workday("Accenture", "accenture", "AccentureCareerSite", wd_num=3),
+    _workday("Deloitte", "deloitte", "DeloitteCareers", wd_num=1),
+    # Healthcare / Pharma
+    _workday("Pfizer", "pfizer", "PfizerCareers", wd_num=1),
+    _workday("Johnson & Johnson", "jnj", "JNJ"),
+    _workday("AstraZeneca", "astrazeneca", "AstraZeneca", wd_num=3),
+    _workday("Merck", "merck", "US_MSD_Careers"),
+    # Retail / Consumer
+    _workday("Target", "target", "careersites"),
+    _workday("Nike", "nike", "CorporateCareers"),
+    _workday("Walmart", "walmart", "womcareers", wd_num=1),
+]
+
+
+COMPANY_CAREER_FEEDS = BIG_TECH_FEEDS + GREENHOUSE_FEEDS + LEVER_FEEDS + ASHBY_FEEDS + SMARTRECRUITERS_FEEDS + WORKDAY_FEEDS
+ALL_SOURCES = JOB_BOARD_SOURCES + ADZUNA_SOURCES + COMPANY_CAREER_FEEDS
 
 
 def get_enabled_sources(source_names: list[str] | None = None) -> list[JobSource]:

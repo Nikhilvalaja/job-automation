@@ -62,47 +62,182 @@ logger = get_logger(__name__)
 # Known job alert senders
 # ---------------------------------------------------------------------------
 
+# Known job alert sender addresses (exact match)
 JOB_ALERT_SENDERS = {
+    # LinkedIn
     "jobs-noreply@linkedin.com": "LinkedIn",
+    "jobalert@linkedin.com": "LinkedIn",
+    "notifications@linkedin.com": "LinkedIn",
+    # Indeed
     "jobalerts@indeed.com": "Indeed",
     "indeed@email.indeed.com": "Indeed",
     "noreply@indeed.com": "Indeed",
+    "no-reply@indeed.com": "Indeed",
+    # Dice
     "alerts@dice.com": "Dice",
+    "noreply@dice.com": "Dice",
+    # Glassdoor
     "noreply@glassdoor.com": "Glassdoor",
+    "alerts@glassdoor.com": "Glassdoor",
+    # ZipRecruiter
     "alerts@ziprecruiter.com": "ZipRecruiter",
     "noreply@ziprecruiter.com": "ZipRecruiter",
+    # Google Alerts (for job alerts set up via Google)
     "googlealerts-noreply@google.com": "Google Alerts",
+    # Handshake
     "noreply@joinhandshake.com": "Handshake",
+    "notifications@joinhandshake.com": "Handshake",
+    # Monster
     "jobs@monster.com": "Monster",
+    "noreply@monster.com": "Monster",
+    # CareerBuilder
     "alerts@careerbuilder.com": "CareerBuilder",
+    "noreply@careerbuilder.com": "CareerBuilder",
+    # SimplyHired
     "noreply@simplyhired.com": "SimplyHired",
+    # ATS alerts
     "notifications@greenhouse.io": "Greenhouse Alert",
     "alerts@lever.co": "Lever Alert",
+    # Wellfound / AngelList
     "noreply@wellfound.com": "Wellfound",
+    "noreply@angel.co": "AngelList",
+    # YC / Remote boards
     "noreply@ycombinator.com": "YC Jobs",
     "no-reply@builtinnyc.com": "BuiltIn",
     "no-reply@builtinsf.com": "BuiltIn",
+    "no-reply@builtin.com": "BuiltIn",
     "noreply@remoteok.com": "RemoteOK",
     "hello@remotive.com": "Remotive",
     "jobs@weworkremotely.com": "WeWorkRemotely",
+    # iHire — seen in user's inbox
+    "jobseekers@email.ihire.com": "iHire Technology",
+    "noreply@ihire.com": "iHire",
+    # Lensa — seen in user's inbox
+    "jobalert@lensa.com": "Lensa",
+    "noreply@lensa.com": "Lensa",
+    # jobs2web — used by many companies (e.g. Westinghouse) for career notifications
+    "noreply@jobs2web.com": "jobs2web",
+    "westinghouse-jobnotification@noreply.jobs2web.com": "Westinghouse",
+    # Talent.com / Jora
+    "alert@talent.com": "Talent.com",
+    "noreply@talent.com": "Talent.com",
+    # Snagajob
+    "noreply@snagajob.com": "Snagajob",
+    # FlexJobs
+    "noreply@flexjobs.com": "FlexJobs",
+    "jobs@flexjobs.com": "FlexJobs",
+    # Hired
+    "hello@hired.com": "Hired",
+    "noreply@hired.com": "Hired",
+    # Ladders
+    "jobs@theladders.com": "TheLadders",
+    # Jobcase
+    "noreply@jobcase.com": "Jobcase",
+    # Recruiter.com
+    "noreply@recruiter.com": "Recruiter.com",
+    # SmartRecruiters
+    "noreply@smartrecruiters.com": "SmartRecruiters",
+    # Ashby
+    "noreply@ashbyhq.com": "Ashby",
+    # Workday notifications
+    "no-reply@myworkday.com": "Workday",
+    # Notify.io / jobs.io
+    "noreply@jobs.io": "Jobs.io",
+    # Joblift
+    "noreply@joblift.com": "Joblift",
+    # Otta
+    "hello@otta.com": "Otta",
+    # Powertofly
+    "noreply@powertofly.com": "PowerToFly",
+    # Idealist
+    "noreply@idealist.org": "Idealist",
+    # Authentic Jobs
+    "noreply@authenticjobs.com": "AuthenticJobs",
+}
+
+# Domain-level sender patterns — catch any address from these job board domains
+# e.g. "westinghouse-jobnotification@noreply.jobs2web.com" is caught by "jobs2web.com"
+JOB_ALERT_DOMAINS = {
+    "ihire.com": "iHire",
+    "email.ihire.com": "iHire",
+    "lensa.com": "Lensa",
+    "jobs2web.com": "jobs2web",
+    "linkedin.com": "LinkedIn",
+    "indeed.com": "Indeed",
+    "email.indeed.com": "Indeed",
+    "dice.com": "Dice",
+    "glassdoor.com": "Glassdoor",
+    "ziprecruiter.com": "ZipRecruiter",
+    "email.ziprecruiter.com": "ZipRecruiter",
+    "monster.com": "Monster",
+    "careerbuilder.com": "CareerBuilder",
+    "simplyhired.com": "SimplyHired",
+    "handshake.com": "Handshake",
+    "joinhandshake.com": "Handshake",
+    "wellfound.com": "Wellfound",
+    "angel.co": "AngelList",
+    "builtinnyc.com": "BuiltIn",
+    "builtinsf.com": "BuiltIn",
+    "builtin.com": "BuiltIn",
+    "remoteok.com": "RemoteOK",
+    "remotive.com": "Remotive",
+    "weworkremotely.com": "WeWorkRemotely",
+    "talent.com": "Talent.com",
+    "jora.com": "Jora",
+    "snagajob.com": "Snagajob",
+    "flexjobs.com": "FlexJobs",
+    "hired.com": "Hired",
+    "theladders.com": "TheLadders",
+    "jobcase.com": "Jobcase",
+    "recruiter.com": "Recruiter.com",
+    "smartrecruiters.com": "SmartRecruiters",
+    "ashbyhq.com": "Ashby",
+    "myworkday.com": "Workday",
+    "greenhouse.io": "Greenhouse",
+    "lever.co": "Lever",
+    "otta.com": "Otta",
+    "powertofly.com": "PowerToFly",
+    "idealist.org": "Idealist",
+    "joblift.com": "Joblift",
+    "joblist.com": "Joblist",
+    "getwork.com": "Getwork",
+    "zippia.com": "Zippia",
+    "jobgether.com": "Jobgether",
+    "himalayas.app": "Himalayas",
 }
 
 # URL patterns that indicate a job posting link (not homepage/unsubscribe)
 JOB_URL_PATTERNS = [
+    # ATS direct links
     r"jobs\.lever\.co/[\w-]+/[a-f0-9-]{36}",
     r"boards\.greenhouse\.io/[\w-]+/jobs/\d+",
     r"jobs\.ashbyhq\.com/[\w-]+/[a-f0-9-]{36}",
     r"careers\.smartrecruiters\.com/[\w-]+/\d+",
+    # Major job boards
     r"linkedin\.com/jobs/view/",
     r"indeed\.com/viewjob\?jk=",
+    r"indeed\.com/rc/clk\?jk=",
     r"dice\.com/job-detail/",
     r"glassdoor\.com/job-listing/",
     r"ziprecruiter\.com/c/",
     r"wellfound\.com/jobs/",
     r"handshake\.com/jobs/",
-    r"/jobs?/\d{4,}",  # Generic job ID in URL path
+    # iHire — seen in user's inbox
+    r"ihire\.com/.*job",
+    r"ihire\.com/seeker/",
+    # Lensa — seen in user's inbox
+    r"lensa\.com/.*job",
+    r"lensa\.com/jobs/",
+    # jobs2web — used by Westinghouse + others
+    r"jobs2web\.com",
+    r"wd\d+\.myworkdayjobs\.com",  # Workday job postings
+    # Company career pages (generic patterns)
+    r"/job[s]?/\d{4,}",       # Numeric job ID
+    r"/job[s]?/[a-zA-Z0-9_-]{6,}",  # Slug-based job URL
     r"/apply/\d{4,}",
-    r"/careers?/\w{8,}",  # Long slug = likely a job posting
+    r"/careers?/[a-zA-Z0-9_-]{8,}",  # Long slug = likely a posting
+    r"/opening[s]?/",
+    r"/position[s]?/\d+",
 ]
 
 # Tracking/redirect params to strip from URLs for canonicalization
@@ -232,16 +367,72 @@ def decode_email_body(msg) -> str:
 def get_sender(msg) -> str:
     """Extract sender email from message."""
     from_header = msg.get("From", "")
-    # Extract email address from "Name <email>" format
     match = re.search(r"<([^>]+)>", from_header)
     if match:
         return match.group(1).lower()
     return from_header.lower().strip()
 
 
+def classify_sender(sender_email: str) -> str:
+    """Classify sender by exact address first, then domain fallback.
+
+    Returns the source label (e.g. "iHire", "Lensa") or empty string if unknown.
+    """
+    sender_lower = sender_email.lower()
+
+    # Exact match
+    if sender_lower in JOB_ALERT_SENDERS:
+        return JOB_ALERT_SENDERS[sender_lower]
+
+    # Domain-level match (e.g. catch any @jobs2web.com address)
+    domain = sender_lower.split("@")[-1] if "@" in sender_lower else ""
+    if domain in JOB_ALERT_DOMAINS:
+        return JOB_ALERT_DOMAINS[domain]
+
+    # Sub-domain match (e.g. "email.ihire.com" subdomain of "ihire.com")
+    parts = domain.split(".")
+    for i in range(len(parts) - 1):
+        parent = ".".join(parts[i:])
+        if parent in JOB_ALERT_DOMAINS:
+            return JOB_ALERT_DOMAINS[parent]
+
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Gmail Bot
 # ---------------------------------------------------------------------------
+
+def _guess_title_from_subject(subject: str) -> str:
+    """Try to extract a job title from an email subject line.
+
+    Examples:
+        "Business Analyst Specialist-only local to TX" → "Business Analyst Specialist"
+        "We received Data Analyst jobs in Austin, TX" → "Data Analyst"
+        "New jobs posted from careers.example.com" → ""
+    """
+    if not subject:
+        return ""
+    # Strip common boilerplate prefixes
+    prefixes = [
+        r"^(new\s+jobs?\s+posted\s+(from|at|on)\s+\S+)",
+        r"^(we\s+received\s+)",
+        r"^(just\s+posted[!:]?\s+)",
+        r"^(your\s+job\s+alert[s]?[:\s-]+)",
+        r"^(job\s+alert[s]?[:\s-]+)",
+        r"^(new\s+job[s]?\s+(for\s+you|matching)[:\s-]+)",
+    ]
+    clean = subject.strip()
+    for p in prefixes:
+        clean = re.sub(p, "", clean, flags=re.IGNORECASE).strip()
+    # If the result looks like a job title (not a URL or long sentence), return it
+    if clean and len(clean) < 100 and "://" not in clean:
+        # Remove trailing location suffixes like "- Austin, TX" or "only local to TX"
+        clean = re.sub(r"\s*([-–|]?\s*(only\s+)?local\s+to\s+\w+.*|[-–|]\s*\w+,\s*\w+.*)$",
+                       "", clean, flags=re.IGNORECASE).strip()
+        return clean[:120]
+    return ""
+
 
 class GmailIngestBot(BaseBot):
     """Reads job alert emails and pushes URLs into discovery database."""
@@ -314,19 +505,53 @@ class GmailIngestBot(BaseBot):
         # Load existing URLs to avoid re-inserting
         existing_urls = get_all_urls()
 
-        # Search for job alert emails from known senders
-        # newer_than:Xh means within last N hours
+        # Broad Gmail search — 3-pass strategy, searches ALL folders (Inbox + Promotions + Updates):
+        #
+        # Pass 1: label:job_alerts — user-labelled emails
+        # Pass 2: Domain-level sender patterns — catches iHire, Lensa, jobs2web etc.
+        #         Using "from:domain.com" catches ALL addresses from that domain.
+        # Pass 3: Subject keywords — catches anything with "job alert", "just posted", etc.
+        #         Intentionally broad: single words + phrases. Gmail OR logic is generous.
+        #
+        # NOTE: Gmail searches ALL mail by default (Inbox, Promotions, Updates, Social, etc.)
+        # -label:sent and -label:chats exclude drafts/sent/chat noise.
+
+        # Build domain-level from: filters (most reliable — catches any address on that domain)
+        key_domains = [
+            "ihire.com", "lensa.com", "jobs2web.com", "linkedin.com",
+            "indeed.com", "dice.com", "glassdoor.com", "ziprecruiter.com",
+            "monster.com", "careerbuilder.com", "handshake.com", "wellfound.com",
+            "builtinnyc.com", "builtinsf.com", "builtin.com", "remoteok.com",
+            "remotive.com", "weworkremotely.com", "talent.com", "snagajob.com",
+            "flexjobs.com", "hired.com", "theladders.com", "jobcase.com",
+            "smartrecruiters.com", "ashbyhq.com", "greenhouse.io", "lever.co",
+            "otta.com", "powertofly.com", "idealist.org", "joblift.com",
+            "zippia.com", "jobgether.com", "himalayas.app",
+        ]
+        from_domains = " OR ".join(f"from:{d}" for d in key_domains)
+
+        # Subject keywords — broad single-word and phrase patterns
+        subject_kw = (
+            "subject:(\"job alert\" OR \"just posted\" OR \"new jobs\" OR \"jobs for you\""
+            " OR \"jobs matching\" OR \"job opportunities\" OR \"open positions\""
+            " OR \"new openings\" OR \"jobs posted\" OR \"career opportunities\""
+            " OR \"hiring now\" OR \"job notification\" OR \"job agent\""
+            " OR \"we found\" OR \"jobs in\" OR \"jobs at\" OR \"job recommendations\")"
+        )
+
         query = (
-            f"label:job_alerts newer_than:{self.lookback_hours}h"
-            f" OR (newer_than:{self.lookback_hours}h"
-            f" from:({' OR '.join(list(JOB_ALERT_SENDERS.keys())[:10])}))"
+            f"newer_than:{self.lookback_hours}h"
+            f" (label:job_alerts"
+            f" OR ({from_domains})"
+            f" OR {subject_kw})"
+            f" -label:sent -label:chats -label:drafts"
         )
 
         try:
             result = service.users().messages().list(
                 userId="me",
                 q=query,
-                maxResults=50,
+                maxResults=100,  # More results — includes Promotions tab
             ).execute()
         except Exception as e:
             logger.error(f"Gmail list failed for account {account_num}: {e}")
@@ -345,19 +570,25 @@ class GmailIngestBot(BaseBot):
 
                 raw = base64.urlsafe_b64decode(msg_data["raw"])
                 email_msg = message_from_bytes(raw)
-                sender = get_sender(email_msg)
-                source_label = JOB_ALERT_SENDERS.get(sender, "Email Alert")
+
+                # Extract full email metadata — store ALL of it regardless of sender
+                sender_email = get_sender(email_msg)
+                sender_domain = sender_email.split("@")[-1] if "@" in sender_email else sender_email
+                source_label = classify_sender(sender_email) or sender_domain or "Email Alert"
+                email_subject = email_msg.get("Subject", "")
+                email_date = email_msg.get("Date", "")
 
                 emails_scanned += 1
                 body = decode_email_body(email_msg)
 
-                # Extract all URLs from email body
+                # Extract all URLs — no whitelist gate. Any email that survived the
+                # Gmail query is a candidate. We filter by URL pattern, not sender.
                 raw_urls = extract_urls_from_text(body)
 
                 for raw_url in raw_urls:
                     canonical = canonicalize_url(raw_url)
 
-                    # Filter: must look like a job posting
+                    # Filter: must look like a job posting URL
                     if not is_job_url(canonical):
                         continue
 
@@ -369,34 +600,49 @@ class GmailIngestBot(BaseBot):
                         continue
 
                     if self.dry_run:
-                        logger.info(f"[DRY-RUN] Would ingest: {canonical} (from {source_label})")
+                        logger.info(
+                            f"[DRY-RUN] {canonical}\n"
+                            f"  sender={sender_email} | source={source_label}"
+                            f" | subject={email_subject[:60]}"
+                        )
                         stored += 1
                         continue
 
-                    # Try to fetch actual job data from the URL
+                    # Try to fetch full job data from the URL (JSON-LD or ATS API)
                     job = self._fetch_job_from_url(canonical, source_label)
                     if job:
-                        job_id = insert_job(job)
-                        if job_id:
-                            stored += 1
-                            existing_urls.add(canonical)
-                            logger.info(f"Ingested job: {job['title']} at {job.get('company', '?')}")
-                        else:
-                            skipped += 1
+                        # Enrich with email metadata
+                        job.setdefault("posted_at", email_date)
+                        job["source_name"] = f"Gmail:{source_label}"
+                        job["email_sender"] = sender_email
+                        job["source_domain"] = sender_domain
+                        job["raw_payload_json"] = f'{{"email_from":"{sender_email}","email_domain":"{sender_domain}","subject":"{email_subject[:200]}","date":"{email_date}","url":"{canonical}"}}'
                     else:
-                        # Store URL as a minimal record so we don't lose it
-                        minimal_job = {
-                            "title": "Job from " + source_label,
+                        # Store minimal record — never lose a URL
+                        guessed_title = _guess_title_from_subject(email_subject) or f"Job from {source_label}"
+                        job = {
+                            "title": guessed_title,
                             "company": "",
                             "url": canonical,
                             "description": "",
                             "location": "",
+                            "posted_at": email_date,
                             "source_name": f"Gmail:{source_label}",
+                            "email_sender": sender_email,
+                            "source_domain": sender_domain,
+                            "raw_payload_json": f'{{"email_from":"{sender_email}","email_domain":"{sender_domain}","subject":"{email_subject[:200]}","date":"{email_date}","url":"{canonical}"}}',
                         }
-                        job_id = insert_job(minimal_job)
-                        if job_id:
-                            stored += 1
-                            existing_urls.add(canonical)
+
+                    job_id = insert_job(job)
+                    if job_id:
+                        stored += 1
+                        existing_urls.add(canonical)
+                        logger.info(
+                            f"Stored: {job.get('title','?')} | {source_label}"
+                            f" | {sender_email} | {canonical[:60]}"
+                        )
+                    else:
+                        skipped += 1
 
             except Exception as e:
                 logger.debug(f"Failed to process email {msg_ref['id']}: {e}")

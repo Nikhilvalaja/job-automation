@@ -173,6 +173,10 @@ def init_db() -> None:
                 description_length INTEGER DEFAULT 0,
                 is_staffing_agency INTEGER DEFAULT 0,  -- 1 = flagged as staffing/recruiting firm
 
+                -- Source provenance — enables dashboard filtering by sender/website
+                email_sender TEXT DEFAULT '',       -- raw sender email (e.g. jobseekers@email.ihire.com)
+                source_domain TEXT DEFAULT '',      -- sender domain / source website (e.g. ihire.com)
+
                 -- Alert tracking (idempotent Telegram notifications)
                 alerted_at TEXT DEFAULT '',         -- ISO timestamp when Telegram alert sent, empty=not yet
                 alert_status TEXT DEFAULT '',       -- 'sent', 'skipped_backfill', 'skipped_score'
@@ -318,6 +322,8 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         ("is_staffing_agency", "INTEGER DEFAULT 0"),
         ("alerted_at", "TEXT DEFAULT ''"),
         ("alert_status", "TEXT DEFAULT ''"),
+        ("email_sender", "TEXT DEFAULT ''"),
+        ("source_domain", "TEXT DEFAULT ''"),
     ]
     for col_name, col_type in job_migrations:
         if col_name not in existing:
@@ -404,13 +410,29 @@ def insert_job(job: dict) -> str | None:
             except Exception:
                 raw_payload = ""
 
+        # Derive source_domain from email_sender or source_name
+        email_sender = job.get("email_sender", "")
+        source_domain = job.get("source_domain", "")
+        if not source_domain and email_sender and "@" in email_sender:
+            source_domain = email_sender.split("@")[-1]
+        if not source_domain:
+            sn = job.get("source_name", "")
+            if "Gmail:" in sn:
+                source_domain = sn.replace("Gmail:", "").lower()
+            elif ":" in sn:
+                # e.g. "Greenhouse:OpenAI" → "greenhouse.io"
+                prefix = sn.split(":")[0].lower()
+                _ats_domains = {"greenhouse": "greenhouse.io", "lever": "lever.co",
+                                "ashby": "ashbyhq.com", "workday": "myworkdayjobs.com"}
+                source_domain = _ats_domains.get(prefix, prefix)
+
         conn.execute(
             """INSERT INTO discovered_jobs
                (id, title, company, url, description, location, source_name,
                 match_score, fingerprint, ats_job_id, first_seen_at, last_seen_at,
                 posted_at, discovered_at, is_backfill, raw_payload_json,
-                description_length, is_staffing_agency)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                description_length, is_staffing_agency, email_sender, source_domain)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 job_id,
                 job.get("title", ""),
@@ -421,12 +443,14 @@ def insert_job(job: dict) -> str | None:
                 job.get("source_name", ""),
                 job.get("score", 0.0),
                 fp, ats_id,
-                now, now,  # first_seen = last_seen = now
+                now, now,
                 posted, now,
                 1 if job.get("is_backfill") else 0,
                 raw_payload,
                 len(desc),
                 1 if job.get("is_staffing_agency") else 0,
+                email_sender,
+                source_domain,
             ),
         )
         # Register company in the registry

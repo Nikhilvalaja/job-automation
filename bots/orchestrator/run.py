@@ -39,6 +39,7 @@ class Orchestrator:
         enable_email: bool = True,
         enable_reminder: bool = True,
         enable_discovery: bool = True,
+        enable_gmail_ingest: bool = True,
         run_immediately: bool = False,
     ) -> None:
         self.settings = get_settings()
@@ -46,6 +47,7 @@ class Orchestrator:
         self.enable_email = enable_email
         self.enable_reminder = enable_reminder
         self.enable_discovery = enable_discovery
+        self.enable_gmail_ingest = enable_gmail_ingest
         self.run_immediately = run_immediately
         self._notifier: TelegramNotifier | None = None
         self._stopped = False
@@ -60,6 +62,9 @@ class Orchestrator:
 
         if self.enable_discovery:
             self._setup_discovery_bot()
+
+        if self.enable_gmail_ingest:
+            self._setup_gmail_ingest_bot()
 
         # Telegram for orchestrator-level alerts
         self._notifier = TelegramNotifier()
@@ -116,6 +121,27 @@ class Orchestrator:
             )
         except Exception as e:
             logger.error(f"Failed to register discovery bot: {e}", exc_info=True)
+
+    def _setup_gmail_ingest_bot(self) -> None:
+        """Register the Gmail ingest bot — runs every 30 min automatically.
+
+        Scans both Gmail accounts for job alert emails (iHire, Lensa, LinkedIn,
+        Indeed, jobs2web, and any sender with job-related subject lines).
+        No manual terminal runs needed — fully automatic.
+        """
+        try:
+            from bots.gmail_ingest_bot.run import GmailIngestBot
+
+            # Lookback window = slightly more than poll interval to avoid gaps
+            bot = GmailIngestBot(lookback_hours=1)
+            self.scheduler.add_interval_bot(
+                bot,
+                minutes=30,  # Check every 30 min; grabs last 60 min of emails
+                run_immediately=self.run_immediately,
+            )
+            logger.info("Gmail ingest bot registered: every 30 min (auto, no terminal needed)")
+        except Exception as e:
+            logger.warning(f"Gmail ingest bot not registered (Gmail not set up?): {e}")
 
     def start(self) -> None:
         """Start the orchestrator and all scheduled bots."""
@@ -199,6 +225,11 @@ def main() -> None:
         help="Disable the discovery bot",
     )
     parser.add_argument(
+        "--no-gmail",
+        action="store_true",
+        help="Disable the Gmail ingest bot",
+    )
+    parser.add_argument(
         "--run-now",
         action="store_true",
         help="Run all bots once immediately at startup",
@@ -220,6 +251,7 @@ def main() -> None:
         enable_email=not args.no_email,
         enable_reminder=not args.no_reminder,
         enable_discovery=not args.no_discovery,
+        enable_gmail_ingest=not args.no_gmail,
         run_immediately=args.run_now,
     )
 

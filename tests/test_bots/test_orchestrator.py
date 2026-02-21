@@ -179,7 +179,10 @@ class TestOrchestrator:
         )
         from bots.orchestrator.run import Orchestrator
 
-        orch = Orchestrator(enable_email=False, enable_reminder=False)
+        orch = Orchestrator(
+            enable_email=False, enable_reminder=False,
+            enable_discovery=False, enable_gmail_ingest=False,
+        )
         orch.setup()
         # No bots should be registered
         jobs = orch.scheduler.get_jobs()

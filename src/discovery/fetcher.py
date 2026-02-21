@@ -133,8 +133,11 @@ def fetch_api(source: JobSource, query: str = "", location: str = "") -> list[di
     """Fetch jobs from a public JSON API.
 
     Routes to the correct parser based on source.parser field.
+    Supports GET and POST (via source.meta["method"] = "POST").
     """
     url = source.url_template.format(query=query, location=location)
+    meta = getattr(source, "meta", {}) or {}
+    method = meta.get("method", "GET").upper()
 
     try:
         _rate_limit(url, source.rate_limit_seconds)
@@ -143,9 +146,17 @@ def fetch_api(source: JobSource, query: str = "", location: str = "") -> list[di
         headers.update(source.headers)
 
         with httpx.Client(timeout=30.0, headers=headers) as client:
-            resp = client.get(url)
+            if method == "POST":
+                payload = meta.get("payload", {})
+                resp = client.post(url, json=payload)
+            else:
+                resp = client.get(url)
             resp.raise_for_status()
             data = resp.json()
+
+        # Inject base_domain for parsers that need to reconstruct URLs (e.g. Workday)
+        if isinstance(data, dict) and "base_domain" in meta:
+            data["_base_domain"] = meta["base_domain"]
 
         parser_fn = API_PARSERS.get(source.parser, _parse_default)
         jobs = parser_fn(data, source.name)
@@ -407,6 +418,32 @@ def _parse_adzuna(data: dict, source_name: str) -> list[dict]:
     return jobs
 
 
+def _parse_workday(data: dict, source_name: str) -> list[dict]:
+    """Parse Workday REST API response.
+
+    POST /wday/cxs/{tenant}/{site}/jobs → {jobPostings: [{title, externalPath, locationsText, ...}]}
+    """
+    jobs = []
+    base_domain = data.get("_base_domain", "")
+    company = source_name.replace("Workday: ", "")
+
+    for item in data.get("jobPostings", []):
+        external_path = item.get("externalPath", "")
+        url = f"{base_domain}{external_path}" if base_domain and external_path else ""
+        posted_on = item.get("postedOn", "")
+
+        jobs.append({
+            "title": item.get("title", ""),
+            "company": company,
+            "url": url,
+            "description": item.get("briefDescription", ""),
+            "location": item.get("locationsText", ""),
+            "posted_at": posted_on,
+            "source_name": source_name,
+        })
+    return jobs
+
+
 def _parse_default(data: list | dict, source_name: str) -> list[dict]:
     """Fallback parser for unknown API formats."""
     logger.warning(f"No parser for {source_name}, skipping")
@@ -427,6 +464,7 @@ API_PARSERS = {
     "smartrecruiters": _parse_smartrecruiters,
     "muse": _parse_muse,
     "adzuna": _parse_adzuna,
+    "workday": _parse_workday,
     "default": _parse_default,
 }
 
@@ -457,6 +495,8 @@ def fetch_paginated(source: JobSource, query: str = "", location: str = "",
         return _fetch_muse_paginated(source, max_pages)
     elif source.parser == "adzuna":
         return _fetch_adzuna_paginated(source, query, location, max_pages)
+    elif source.parser == "workday":
+        return _fetch_workday_paginated(source, max_pages)
     else:
         return fetch_api(source, query, location)
 
@@ -530,4 +570,43 @@ def _fetch_adzuna_paginated(source: JobSource, query: str, location: str,
             logger.warning(f"[Adzuna page {page}] {e}")
             break
 
+    return all_jobs
+
+
+def _fetch_workday_paginated(source: JobSource, max_pages: int = 10) -> list[dict]:
+    """Fetch multiple pages from Workday using offset-based pagination.
+
+    Workday returns up to `limit` results per page; paginate by incrementing offset.
+    """
+    all_jobs: list[dict] = []
+    meta = getattr(source, "meta", {}) or {}
+    base_payload = dict(meta.get("payload", {}))
+    base_domain = meta.get("base_domain", "")
+    page_size = base_payload.get("limit", 20)
+    url = source.url_template
+    headers = {"User-Agent": "JobPilot/1.0", "Content-Type": "application/json"}
+
+    for page in range(max_pages):
+        offset = page * page_size
+        payload = {**base_payload, "offset": offset}
+        try:
+            _rate_limit(url, source.rate_limit_seconds)
+            with httpx.Client(timeout=30.0, headers=headers) as client:
+                resp = client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+            if base_domain:
+                data["_base_domain"] = base_domain
+            jobs = _parse_workday(data, source.name)
+            if not jobs:
+                break
+            all_jobs.extend(jobs)
+            # Stop if fewer results than page_size — last page
+            if len(jobs) < page_size:
+                break
+        except Exception as e:
+            logger.warning(f"[Workday page {page}] {source.name}: {e}")
+            break
+
+    logger.info(f"[Workday paginated] {source.name}: {len(all_jobs)} total jobs")
     return all_jobs

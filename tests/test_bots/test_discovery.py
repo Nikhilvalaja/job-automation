@@ -401,6 +401,7 @@ class TestDiscoveryDatabase:
 class TestDiscoveryBot:
     """Test the Discovery Bot with mocked sources and DB."""
 
+    @patch("bots.discovery_bot.run.JSONLD_COMPANY_REGISTRY", [])
     @patch("bots.discovery_bot.run.rebuild_fts_index")
     @patch("bots.discovery_bot.run.insert_job", return_value="abc123")
     @patch("bots.discovery_bot.run.update_parsed_fields")
@@ -423,7 +424,8 @@ class TestDiscoveryBot:
         ]
         mock_fetch.return_value = [
             {"title": "Software Engineer", "company": "Google", "url": "http://test.com/1",
-             "description": "Build software engineer systems", "location": "Remote", "source_name": "Test"},
+             "description": "We are seeking software engineers to build scalable distributed backend systems using Python and modern cloud infrastructure on large scale production environments.",
+             "location": "Remote", "source_name": "Test"},
         ]
 
         bot = DiscoveryBot(dry_run=False)
@@ -435,6 +437,7 @@ class TestDiscoveryBot:
         assert stats["stored"] >= 1
         mock_insert.assert_called()
 
+    @patch("bots.discovery_bot.run.JSONLD_COMPANY_REGISTRY", [])
     @patch("bots.discovery_bot.run.get_all_ats_ids", return_value=set())
     @patch("bots.discovery_bot.run.get_all_fingerprints", return_value=set())
     @patch("bots.discovery_bot.run.get_all_urls", return_value={"http://existing.com/job1"})
@@ -449,14 +452,15 @@ class TestDiscoveryBot:
         from bots.discovery_bot.run import DiscoveryBot
         from src.discovery.sources import JobSource, SourceType
 
+        _desc = "We are seeking software engineers to build scalable distributed backend systems using Python and modern cloud infrastructure on large scale production environments."
         mock_sources.return_value = [
             JobSource(name="Test", source_type=SourceType.API, url_template="http://test.com"),
         ]
         mock_fetch.return_value = [
             {"title": "Software Engineer", "company": "Google", "url": "http://existing.com/job1",
-             "description": "build systems", "location": "", "source_name": "Test"},
+             "description": _desc, "location": "", "source_name": "Test"},
             {"title": "Software Engineer", "company": "Meta", "url": "http://new.com/job2",
-             "description": "build systems", "location": "", "source_name": "Test"},
+             "description": _desc, "location": "", "source_name": "Test"},
         ]
 
         bot = DiscoveryBot(dry_run=True)
@@ -467,6 +471,7 @@ class TestDiscoveryBot:
         assert stats["duplicates"] == 1
         assert stats["matched"] == 1
 
+    @patch("bots.discovery_bot.run.JSONLD_COMPANY_REGISTRY", [])
     @patch("bots.discovery_bot.run.get_all_ats_ids", return_value=set())
     @patch("bots.discovery_bot.run.get_all_fingerprints", return_value=set())
     @patch("bots.discovery_bot.run.get_all_urls", return_value=set())
@@ -486,7 +491,9 @@ class TestDiscoveryBot:
         ]
         mock_fetch.return_value = [
             {"title": "Software Engineering Intern", "company": "Google",
-             "url": "http://test.com/intern", "description": "", "location": "", "source_name": "Test"},
+             "url": "http://test.com/intern",
+             "description": "We are seeking software engineering interns to assist with building scalable distributed systems and cloud infrastructure. Undergraduate degree required.",
+             "location": "", "source_name": "Test"},
         ]
 
         bot = DiscoveryBot(dry_run=True)
