@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     discovery_locations: str = ""  # comma-separated: "remote,new york"
     discovery_excluded_keywords: str = ""  # comma-separated: "intern,director"
 
+    # --- Alerts ---
+    priority_score_threshold: float = 0.3    # Min match score (0.0-1.0) to send Telegram alert
+    alert_quiet_hours_start: int = 22        # No alerts from this hour (24h clock, e.g. 22 = 10 PM)
+    alert_quiet_hours_end: int = 8           # No alerts until this hour (e.g. 8 = 8 AM)
+
     # --- Logging ---
     log_level: str = "INFO"
     log_dir: str = "logs"

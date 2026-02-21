@@ -72,6 +72,11 @@ jobs:
           DISCOVERY_KEYWORDS=${{ secrets.DISCOVERY_KEYWORDS }}
           DISCOVERY_LOCATIONS=${{ secrets.DISCOVERY_LOCATIONS }}
           DISCOVERY_EXCLUDED_KEYWORDS=${{ secrets.DISCOVERY_EXCLUDED_KEYWORDS }}
+          PRIORITY_SCORE_THRESHOLD=0.3
+          ALERT_QUIET_HOURS_START=23
+          ALERT_QUIET_HOURS_END=8
+          ADZUNA_APP_ID=${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_API_KEY=${{ secrets.ADZUNA_API_KEY }}
           LOG_LEVEL=INFO
           LOG_DIR=logs
           EOF

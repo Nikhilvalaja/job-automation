@@ -65,14 +65,23 @@ PAGINATED_PARSERS = {"muse", "adzuna"}
 
 ROLE_FAMILIES = [
     "software engineer",
-    "backend engineer",
+    "software developer",
+    "backend developer",
+    "frontend developer",
+    "full stack developer",
+    "junior developer",
     "data engineer",
-    "ML engineer",
-    "python developer",
+    "data scientist",
     "data analyst",
+    "ML engineer",
+    "machine learning engineer",
+    "python developer",
     "business analyst",
-    "analytics engineer",
+    "financial analyst",
+    "cloud engineer",
     "devops engineer",
+    "epic analyst",
+    "analytics engineer",
     "platform engineer",
 ]
 
@@ -85,6 +94,12 @@ LOCATION_BUCKETS = [
     "Chicago",
     "Boston",
     "Atlanta",
+    "Los Angeles",
+    "Denver",
+    "Dallas",
+    "Washington DC",
+    "Miami",
+    "Philadelphia",
     "United States",
 ]
 
@@ -400,43 +415,53 @@ class DiscoveryBot(BaseBot):
         # Guarantees: no duplicates, no backfill spam, only actionable alerts
         # Logic: job must be (1) first_seen < 2h, (2) is_backfill=0, (3) alerted_at='', (4) score >= threshold
         if not self.dry_run and self._notifier and self._notifier.is_configured():
+            from datetime import datetime
             from src.discovery.database import get_new_jobs_since
-            PRIORITY_SCORE_THRESHOLD = 0.3  # Only notify if score >= 30%
-            # get_new_jobs_since already filters: is_backfill=0 AND alerted_at=''
-            new_jobs = get_new_jobs_since(hours=2)
-            priority_jobs = [
-                j for j in new_jobs
-                if (j.get("match_score") or 0) >= PRIORITY_SCORE_THRESHOLD
-            ]
-            skipped_low_score = [
-                j for j in new_jobs
-                if (j.get("match_score") or 0) < PRIORITY_SCORE_THRESHOLD
-            ]
+            _s = get_settings()
+            PRIORITY_SCORE_THRESHOLD = _s.priority_score_threshold  # configurable via .env
+            # Quiet hours check — skip alerts between quiet_start and quiet_end
+            _hour = datetime.now().hour
+            _qs, _qe = _s.alert_quiet_hours_start, _s.alert_quiet_hours_end
+            _in_quiet = (_qs <= _qe and _qs <= _hour < _qe) or \
+                        (_qs > _qe and (_hour >= _qs or _hour < _qe))
+            if _in_quiet:
+                logger.info(f"Quiet hours ({_qs:02d}:00–{_qe:02d}:00) — skipping Telegram alerts")
+            else:
+                # get_new_jobs_since already filters: is_backfill=0 AND alerted_at=''
+                new_jobs = get_new_jobs_since(hours=2)
+                priority_jobs = [
+                    j for j in new_jobs
+                    if (j.get("match_score") or 0) >= PRIORITY_SCORE_THRESHOLD
+                ]
+                skipped_low_score = [
+                    j for j in new_jobs
+                    if (j.get("match_score") or 0) < PRIORITY_SCORE_THRESHOLD
+                ]
 
-            if priority_jobs:
-                job_lines = "\n".join(
-                    f"  [{j.get('match_score', 0):.0%}] {j['title']} @ {j.get('company', '?')}"
-                    for j in priority_jobs[:8]
-                )
-                more = f"\n  ...and {len(priority_jobs) - 8} more" if len(priority_jobs) > 8 else ""
-                self._notifier.send_message(
-                    f"*High-Match Jobs (last 2h)*\n\n{job_lines}{more}\n\n"
-                    f"_Total stored this run: {stored}_"
-                )
-                # Mark alerted so we never re-notify these
-                for j in priority_jobs:
-                    mark_alerted(j["id"])
+            if not _in_quiet:
+                if priority_jobs:
+                    job_lines = "\n".join(
+                        f"  [{j.get('match_score', 0):.0%}] {j['title']} @ {j.get('company', '?')}"
+                        for j in priority_jobs[:8]
+                    )
+                    more = f"\n  ...and {len(priority_jobs) - 8} more" if len(priority_jobs) > 8 else ""
+                    self._notifier.send_message(
+                        f"*High-Match Jobs (last 2h)*\n\n{job_lines}{more}\n\n"
+                        f"_Total stored this run: {stored}_"
+                    )
+                    # Mark alerted so we never re-notify these
+                    for j in priority_jobs:
+                        mark_alerted(j["id"])
+                elif stored > 0:
+                    # Low-signal summary (all stored, no high-priority matches)
+                    self._notifier.send_message(
+                        f"*Discovery: {stored} new jobs stored* "
+                        f"(none scored ≥{PRIORITY_SCORE_THRESHOLD:.0%} this cycle)"
+                    )
 
-            # Mark low-score jobs as skipped so we don't check them on next run
-            for j in skipped_low_score:
-                mark_alert_skipped(j["id"], "skipped_score")
-
-            if not priority_jobs and stored > 0:
-                # Low-signal summary (all stored, no high-priority matches)
-                self._notifier.send_message(
-                    f"*Discovery: {stored} new jobs stored* "
-                    f"(none scored ≥{PRIORITY_SCORE_THRESHOLD:.0%} this cycle)"
-                )
+                # Mark low-score jobs as skipped so we don't check them on next run
+                for j in skipped_low_score:
+                    mark_alert_skipped(j["id"], "skipped_score")
 
         # Rebuild FTS index after batch insert
         if stored > 0 and not self.dry_run:

@@ -191,22 +191,36 @@ _ADZUNA_APP = "app_id=234c7209&app_key=acf278cb73feb0113ead83faa2281f0b"
 
 ADZUNA_ROLES = [
     ("Software Engineer", "software+engineer"),
-    ("Backend Engineer", "backend+engineer"),
+    ("Software Developer", "software+developer"),
+    ("Backend Developer", "backend+developer"),
+    ("Frontend Developer", "frontend+developer"),
+    ("Full Stack Developer", "full+stack+developer"),
+    ("Junior Developer", "junior+developer"),
     ("Data Engineer", "data+engineer"),
+    ("Data Scientist", "data+scientist"),
+    ("Data Analyst", "data+analyst"),
     ("ML Engineer", "machine+learning+engineer"),
     ("Python Developer", "python+developer"),
-    ("Data Scientist", "data+scientist"),
-    ("Full Stack Developer", "full+stack+developer"),
-    ("Platform Engineer", "platform+engineer"),
+    ("Business Analyst", "business+analyst"),
+    ("Financial Analyst", "financial+analyst"),
+    ("Cloud Engineer", "cloud+engineer"),
+    ("DevOps Engineer", "devops+engineer"),
+    ("Epic Analyst", "epic+analyst"),
 ]
 
 ADZUNA_LOCATIONS = [
-    ("", ""),              # Nationwide — no location filter
+    ("", ""),                       # Nationwide — no location filter
     ("NY", "new+york"),
     ("SF", "san+francisco"),
     ("Seattle", "seattle"),
     ("Chicago", "chicago"),
     ("Austin", "austin"),
+    ("Boston", "boston"),
+    ("Atlanta", "atlanta"),
+    ("Los Angeles", "los+angeles"),
+    ("Denver", "denver"),
+    ("Dallas", "dallas"),
+    ("Washington DC", "washington+dc"),
 ]
 
 

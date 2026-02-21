@@ -673,6 +673,97 @@ def render_sites(df: pd.DataFrame):
     )
 
 
+# --- System Health ---
+def render_health(backend_url: str):
+    """System health tab — service status, pipeline stats, live logs."""
+    st.subheader("System Health")
+    st.caption("Real-time status of all JobPilot services, discovery pipeline, and recent logs.")
+
+    # ── Service status ────────────────────────────────────────────────
+    st.markdown("#### Services")
+    col_b, col_d, col_h = st.columns(3)
+
+    # Backend
+    try:
+        r = httpx.get(f"{backend_url}/health", timeout=3.0)
+        ok = r.status_code == 200
+    except Exception:
+        ok = False
+    col_b.metric("Backend API", "Running ✅" if ok else "Down ❌", "port 8000")
+
+    # Dashboard (self — if we're rendering this, it's up)
+    col_d.metric("Dashboard", "Running ✅", "port 8501")
+
+    # Check /ready (Sheets connectivity)
+    try:
+        r2 = httpx.get(f"{backend_url}/ready", timeout=5.0)
+        sheets_ok = r2.status_code == 200
+    except Exception:
+        sheets_ok = False
+    col_h.metric("Google Sheets", "Connected ✅" if sheets_ok else "Disconnected ⚠️", "via service account")
+
+    st.divider()
+
+    # ── Discovery pipeline stats ──────────────────────────────────────
+    st.markdown("#### Discovery Pipeline")
+    try:
+        r3 = httpx.get(f"{backend_url}/discovery/stats", timeout=5.0)
+        if r3.status_code == 200:
+            s = r3.json()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Discovered", f"{s.get('total', 0):,}")
+            c2.metric("Jobs/Day (7d avg)", f"{s.get('jobs_per_day', 0):.0f}")
+            c3.metric("Sources Active", str(s.get("sources_active", "—")))
+            c4.metric("Sources Failing", str(s.get("sources_failing", 0)))
+        else:
+            st.warning("Could not load discovery stats.")
+    except Exception as e:
+        st.warning(f"Discovery stats unavailable: {e}")
+
+    st.divider()
+
+    # ── Mobile capture link ───────────────────────────────────────────
+    st.markdown("#### Mobile Job Capture")
+    import socket
+    try:
+        hostname = socket.gethostbyname(socket.gethostname())
+    except Exception:
+        hostname = "localhost"
+    mobile_url = f"http://{hostname}:8000/capture"
+    st.info(
+        f"**On your phone (same WiFi):** open [{mobile_url}]({mobile_url})  \n"
+        f"Paste any job URL → saved to JobPilot instantly."
+    )
+
+    st.divider()
+
+    # ── Live logs ─────────────────────────────────────────────────────
+    st.markdown("#### Recent Logs")
+    log_dir = Path("logs")
+    if not log_dir.exists():
+        st.info("No logs directory found.")
+    else:
+        log_files = sorted(log_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not log_files:
+            st.info("No log files yet.")
+        else:
+            selected_log = st.selectbox(
+                "Log file", options=[p.name for p in log_files], index=0
+            )
+            lines_count = st.slider("Lines to show", 20, 200, 50, step=10)
+            log_path = log_dir / selected_log
+            try:
+                with open(log_path, encoding="utf-8", errors="replace") as f:
+                    all_lines = f.readlines()
+                tail = "".join(all_lines[-lines_count:])
+                st.code(tail, language="")
+            except Exception as e:
+                st.error(f"Could not read log: {e}")
+
+    if st.button("Refresh", key="health_refresh"):
+        st.rerun()
+
+
 # --- Cover Letter Generator ---
 def render_cover_letter(df: pd.DataFrame, backend_url: str):
     """Render cover letter generator UI with tone selection."""
@@ -2758,11 +2849,11 @@ def main():
 
     st.title("JobPilot Dashboard")
 
-    # Main tabs — 14 tabs
+    # Main tabs — 15 tabs
     (tab_today, tab_overview, tab_disc, tab_table, tab_my_resumes,
-     tab_cover, tab_resume, tab_crm, tab_referral, tab_signals, tab_outreach, tab_bots, tab_rules, tab_sites) = st.tabs(
+     tab_cover, tab_resume, tab_crm, tab_referral, tab_signals, tab_outreach, tab_bots, tab_rules, tab_sites, tab_health) = st.tabs(
         ["Today ★", "Overview", "Job Discovery", "Applications", "My Resumes",
-         "Cover Letter", "Resume Studio", "CRM", "Referral", "Signals", "Outreach", "Bot Controls", "Email Rules", "Sites & Sources"]
+         "Cover Letter", "Resume Studio", "CRM", "Referral", "Signals", "Outreach", "Bot Controls", "Email Rules", "Sites & Sources", "System Health"]
     )
 
     with tab_today:
@@ -2808,6 +2899,9 @@ def main():
 
     with tab_sites:
         render_sites(df)
+
+    with tab_health:
+        render_health(backend_url)
 
 
 if __name__ == "__main__":
